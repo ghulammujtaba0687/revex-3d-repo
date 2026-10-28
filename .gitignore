@@ -1,0 +1,12 @@
+node_modules
+.env
+.env.*
+!.env.example
+dist
+build
+.react-router
+.cache
+.turbo
+*.log
+.DS_Store
+.shopify
