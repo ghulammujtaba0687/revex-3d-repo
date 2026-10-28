@@ -79,6 +79,8 @@ export class GalleryScene {
   private flyFrom = new THREE.Vector3();
   private flyFromYaw = 0;
   private flyFromPitch = 0;
+  private flyToYaw = Math.PI / 2;
+  private signPos = new THREE.Vector3();
 
   private gender: Gender;
   private labelEl: HTMLElement | null;
@@ -148,8 +150,25 @@ export class GalleryScene {
     this.flyFrom.copy(this.yaw.position);
     this.flyFromYaw = this.yaw.rotation.y;
     this.flyFromPitch = this.pitch;
+    this.flyToYaw = this.entranceYaw();
     this.flyT = 0;
     this.mode = 'flyin';
+  }
+
+  /**
+   * Faces the hall but turns just enough that the welcome sign sits inside the left of the
+   * frame. On narrow (portrait) screens that turn would hide the hall, so it stays on the hall.
+   */
+  private entranceYaw() {
+    const hall = Math.PI / 2;
+    const toSign = Math.atan2(-(this.signPos.x - START.x), -(this.signPos.z - START.z));
+    const offset = shortestAngle(hall, toSign);
+    const halfFov = Math.atan(
+      Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) * this.camera.aspect,
+    );
+    const turn = Math.max(0, Math.abs(offset) - (halfFov - THREE.MathUtils.degToRad(12)));
+    if (turn > 0.45) return hall;
+    return hall + Math.sign(offset) * turn;
   }
 
   setEnabled(enabled: boolean) {
@@ -648,6 +667,7 @@ export class GalleryScene {
     easel.lookAt(START.x + 1.5, 0, START.z - 1.2);
     this.scene.add(easel);
     this.obstacles.push({x: easel.position.x, z: easel.position.z, r: 0.9});
+    this.signPos.copy(easel.position);
   }
 
   private buildFigures(products: GalleryProduct[]) {
@@ -898,7 +918,7 @@ export class GalleryScene {
       this.flyT = Math.min(1, this.flyT + dt / 2.6);
       const k = easeInOutCubic(this.flyT);
       this.yaw.position.lerpVectors(this.flyFrom, START, k);
-      this.yaw.rotation.y = lerpAngle(this.flyFromYaw, Math.PI / 2, k);
+      this.yaw.rotation.y = lerpAngle(this.flyFromYaw, this.flyToYaw, k);
       this.pitch = THREE.MathUtils.lerp(this.flyFromPitch, -0.04, k);
       this.camera.rotation.x = this.pitch;
       if (this.flyT >= 1) this.mode = 'walk';
