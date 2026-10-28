@@ -1,0 +1,446 @@
+.gallery-active header,
+.gallery-active footer {
+  display: none !important;
+}
+
+.gal-root {
+  position: fixed;
+  inset: 0;
+  background: #0a0a0a;
+  overflow: hidden;
+  font-family: 'Josefin Sans', 'Helvetica Neue', Arial, sans-serif;
+  --gold: #c9a84a;
+  --gold-light: #e0c267;
+  --ink: #f1ede5;
+}
+
+.gal-canvas-wrap {
+  position: absolute;
+  inset: 0;
+}
+.gal-canvas-wrap canvas {
+  display: block;
+  cursor: pointer;
+}
+
+.gal-empty {
+  min-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: #eee;
+  font-family: 'Josefin Sans', sans-serif;
+  gap: 0.75rem;
+  padding: 2rem;
+}
+
+/* ---- full-screen message panels (loading / intro / resume) ---- */
+.gal-screen {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--ink);
+  background: radial-gradient(circle at 50% 38%, #171717 0%, #000 72%);
+}
+
+.gal-wm {
+  font-weight: 300;
+  font-size: 20px;
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
+  color: #fff;
+}
+
+.gal-tag {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  font-size: 10px;
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
+  color: var(--gold);
+  margin-top: 14px;
+  text-transform: uppercase;
+}
+.gal-tag::before,
+.gal-tag::after {
+  content: '';
+  width: 24px;
+  height: 1px;
+  background: var(--gold);
+  opacity: 0.6;
+}
+
+.gal-bar {
+  width: 230px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.12);
+  position: relative;
+  overflow: hidden;
+  margin-top: 44px;
+}
+.gal-bar i {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  display: block;
+  background: linear-gradient(to right, var(--gold), #fff);
+  transition: width 0.15s linear;
+}
+
+.gal-pct {
+  font-size: 9px;
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
+  color: rgba(255, 255, 255, 0.5);
+  margin-top: 14px;
+}
+
+.gal-sep {
+  width: 1px;
+  height: 46px;
+  background: linear-gradient(to bottom, transparent, var(--gold), transparent);
+  margin: 26px auto;
+  opacity: 0.55;
+}
+
+.gal-hints {
+  font-size: 10.5px;
+  letter-spacing: 0.22em;
+  color: rgba(255, 255, 255, 0.6);
+  text-transform: uppercase;
+  line-height: 1.9;
+  max-width: 320px;
+}
+.gal-hints b {
+  color: #fff;
+  font-weight: 400;
+}
+
+.gal-enter-btn {
+  margin-top: 30px;
+  padding: 15px 52px;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  background: transparent;
+  color: #fff;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.4em;
+  text-indent: 0.4em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: color 0.3s, border-color 0.3s, background 0.3s;
+}
+.gal-enter-btn:hover {
+  color: #111;
+  background: linear-gradient(to right, var(--gold), var(--gold-light));
+  border-color: var(--gold-light);
+}
+
+.gal-skip {
+  margin-top: 18px;
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: rgba(255, 255, 255, 0.45);
+  text-decoration: none;
+}
+.gal-skip:hover {
+  color: var(--gold);
+}
+
+.gal-resume {
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+/* ---- HUD ---- */
+.gal-crosshair {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px;
+  border-radius: 50%;
+  background: rgba(201, 168, 74, 0.7);
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.18);
+  pointer-events: none;
+  z-index: 20;
+}
+
+.gal-hint {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #cbb88a;
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  background: rgba(12, 12, 12, 0.45);
+  padding: 7px 16px;
+  border-radius: 20px;
+  pointer-events: none;
+  z-index: 20;
+  border: 1px solid rgba(201, 168, 74, 0.25);
+  max-width: 80vw;
+  text-align: center;
+}
+
+.gal-hover-label {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 19;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  transform: translate(-9999px, -9999px);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+  text-align: center;
+}
+.gal-hover-title {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: #fff;
+  background: rgba(12, 12, 12, 0.6);
+  padding: 4px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(201, 168, 74, 0.35);
+  white-space: nowrap;
+}
+.gal-hover-price {
+  font-size: 10px;
+  color: var(--gold-light);
+}
+
+/* ---- menu bar ---- */
+.gal-menubar {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  background: rgba(12, 12, 12, 0.5);
+  border: 1px solid rgba(201, 168, 74, 0.4);
+  border-radius: 22px;
+  backdrop-filter: blur(8px);
+}
+.gal-brand {
+  color: #fff;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  padding: 0 10px;
+}
+.gal-menubar a,
+.gal-menubar button {
+  color: rgba(241, 237, 229, 0.82);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  text-decoration: none;
+  padding: 7px 11px;
+  border-radius: 16px;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.3s, background 0.3s;
+}
+.gal-menubar a:hover,
+.gal-menubar button:hover {
+  color: #151310;
+  background: linear-gradient(to right, var(--gold), var(--gold-light));
+}
+.gal-menu-toggle {
+  display: none;
+}
+
+.gal-mmenu {
+  position: fixed;
+  top: 64px;
+  left: 16px;
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 8px;
+  background: rgba(12, 12, 12, 0.75);
+  border: 1px solid rgba(201, 168, 74, 0.4);
+  border-radius: 14px;
+  backdrop-filter: blur(10px);
+}
+.gal-mmenu a,
+.gal-mmenu button {
+  color: rgba(241, 237, 229, 0.88);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  text-decoration: none;
+  padding: 11px 12px;
+  border-radius: 9px;
+  background: transparent;
+  border: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.gal-mmenu a:hover,
+.gal-mmenu button:hover {
+  color: #151310;
+  background: linear-gradient(to right, var(--gold), var(--gold-light));
+}
+
+@media (max-width: 640px) {
+  .gal-menubar a:not(.gal-brand) {
+    display: none;
+  }
+  .gal-menu-toggle {
+    display: inline-flex;
+  }
+}
+
+/* ---- touch joysticks ---- */
+.gal-stick {
+  position: fixed;
+  bottom: 26px;
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  backdrop-filter: blur(4px);
+  touch-action: none;
+  z-index: 40;
+  background: radial-gradient(circle, #3a3a3a 0%, #1c1c1c 100%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 14px rgba(0, 0, 0, 0.5);
+}
+.gal-stick-left {
+  left: 26px;
+}
+.gal-stick-right {
+  right: 26px;
+}
+.gal-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 46px;
+  height: 46px;
+  margin: -23px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--gold-light), var(--gold));
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+/* ---- product overlay ---- */
+.gal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(5, 5, 5, 0.82);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.gal-overlay-close {
+  position: absolute;
+  top: 20px;
+  right: 24px;
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 28px;
+  cursor: pointer;
+  line-height: 1;
+}
+.gal-overlay-card {
+  display: flex;
+  gap: 32px;
+  max-width: 760px;
+  width: 100%;
+  background: #0f0f0f;
+  border: 1px solid rgba(201, 168, 74, 0.3);
+  border-radius: 8px;
+  overflow: hidden;
+  flex-wrap: wrap;
+}
+.gal-overlay-card img {
+  width: 320px;
+  max-width: 100%;
+  height: 380px;
+  object-fit: cover;
+  background: #1a1a1a;
+}
+.gal-overlay-info {
+  padding: 28px 28px 28px 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  color: #fff;
+  flex: 1;
+  min-width: 220px;
+}
+.gal-overlay-info h2 {
+  font-size: 20px;
+  font-weight: 300;
+  letter-spacing: 0.08em;
+  margin: 0 0 10px;
+}
+.gal-overlay-price {
+  color: var(--gold-light);
+  font-size: 15px;
+  margin: 0 0 24px;
+}
+.gal-overlay-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: flex-start;
+}
+.gal-overlay-actions button {
+  padding: 13px 34px;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  background: transparent;
+  color: #fff;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: color 0.3s, background 0.3s;
+}
+.gal-overlay-actions button:hover:not(:disabled) {
+  color: #111;
+  background: linear-gradient(to right, var(--gold), var(--gold-light));
+}
+.gal-overlay-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.gal-overlay-actions a {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-decoration: none;
+}
+.gal-overlay-actions a:hover {
+  color: var(--gold-light);
+}

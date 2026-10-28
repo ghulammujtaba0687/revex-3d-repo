@@ -8,5 +8,6 @@ build
 .cache
 .turbo
 *.log
+*.tsbuildinfo
 .DS_Store
 .shopify
