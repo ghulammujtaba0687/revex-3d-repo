@@ -19,6 +19,10 @@ export default async function handleRequest(
       checkoutDomain: context.env.PUBLIC_CHECKOUT_DOMAIN,
       storeDomain: context.env.PUBLIC_STORE_DOMAIN,
     },
+    // Josefin Sans from Google Fonts, and 3D models fetched from the Shopify CDN
+    styleSrc: ['https://fonts.googleapis.com'],
+    fontSrc: ['https://fonts.gstatic.com'],
+    connectSrc: ['https://cdn.shopify.com'],
   });
 
   const body = await renderToReadableStream(

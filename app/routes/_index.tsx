@@ -1,53 +1,79 @@
 import {useLoaderData} from 'react-router';
 import type {Route} from './+types/_index';
 import {MockShopNotice} from '~/components/MockShopNotice';
-import {Gallery, type GalleryProduct} from '~/components/gallery/Gallery';
+import {Gallery} from '~/components/gallery/Gallery';
+import type {GalleryProduct} from '~/components/gallery/types';
 
 export const meta: Route.MetaFunction = () => {
-  return [{title: 'Hydrogen | Gallery'}];
+  return [
+    {title: 'RAVEX | The 3D Gallery'},
+    {
+      name: 'description',
+      content: 'Walk through the RAVEX 3D gallery and shop the collection piece by piece.',
+    },
+  ];
 };
 
 interface GalleryProductsQueryResult {
-  shop: {name: string};
   products: {
     nodes: Array<{
       id: string;
       title: string;
       handle: string;
-      featuredImage: {url: string; altText: string | null} | null;
-      priceRange: {
-        minVariantPrice: {amount: string; currencyCode: string};
-      };
+      images: {nodes: Array<{url: string; altText: string | null}>};
+      options: Array<{name: string; optionValues: Array<{name: string}>}>;
+      priceRange: {minVariantPrice: {amount: string; currencyCode: string}};
       variants: {
-        nodes: Array<{id: string; availableForSale: boolean}>;
+        nodes: Array<{
+          id: string;
+          availableForSale: boolean;
+          price: {amount: string; currencyCode: string};
+          selectedOptions: Array<{name: string; value: string}>;
+        }>;
+      };
+      media: {
+        nodes: Array<{
+          mediaContentType: string;
+          sources?: Array<{url: string; format: string}>;
+        }>;
       };
     }>;
   };
 }
 
 export async function loader({context}: Route.LoaderArgs) {
-  const isShopLinked = Boolean(context.env.PUBLIC_STORE_DOMAIN);
-
-  const {products, shop} = await context.storefront.query<GalleryProductsQueryResult>(
+  const {products} = await context.storefront.query<GalleryProductsQueryResult>(
     GALLERY_PRODUCTS_QUERY,
     {variables: {first: 24}},
   );
 
-  const galleryProducts: GalleryProduct[] = products.nodes.map((product) => ({
-    id: product.id,
-    handle: product.handle,
-    title: product.title,
-    imageUrl: product.featuredImage?.url ?? null,
-    imageAlt: product.featuredImage?.altText ?? null,
-    amount: product.priceRange.minVariantPrice.amount,
-    currencyCode: product.priceRange.minVariantPrice.currencyCode,
-    variantId: product.variants.nodes[0]?.id ?? null,
-    available: product.variants.nodes[0]?.availableForSale ?? false,
-  }));
+  const galleryProducts: GalleryProduct[] = products.nodes.map((product) => {
+    const model = product.media.nodes.find((m) => m.mediaContentType === 'MODEL_3D');
+    const glb = model?.sources?.find((s) => s.format === 'glb');
+    return {
+      id: product.id,
+      handle: product.handle,
+      title: product.title,
+      images: product.images.nodes,
+      modelUrl: glb?.url ?? null,
+      options: product.options.map((o) => ({
+        name: o.name,
+        values: o.optionValues.map((v) => v.name),
+      })),
+      variants: product.variants.nodes.map((v) => ({
+        id: v.id,
+        available: v.availableForSale,
+        amount: v.price.amount,
+        currencyCode: v.price.currencyCode,
+        selectedOptions: v.selectedOptions,
+      })),
+      amount: product.priceRange.minVariantPrice.amount,
+      currencyCode: product.priceRange.minVariantPrice.currencyCode,
+    };
+  });
 
   return {
-    isShopLinked,
-    shopName: shop?.name ?? 'Gallery',
+    isShopLinked: Boolean(context.env.PUBLIC_STORE_DOMAIN),
     galleryProducts,
   };
 }
@@ -57,7 +83,7 @@ export default function Homepage() {
   return (
     <>
       {data.isShopLinked ? null : <MockShopNotice />}
-      <Gallery products={data.galleryProducts} shopName={data.shopName} />
+      <Gallery products={data.galleryProducts} />
     </>
   );
 }
@@ -68,19 +94,22 @@ const GALLERY_PRODUCTS_QUERY = `#graphql
     $language: LanguageCode
     $first: Int
   ) @inContext(country: $country, language: $language) {
-    shop {
-      name
-    }
     products(first: $first, sortKey: UPDATED_AT, reverse: true) {
       nodes {
         id
         title
         handle
-        featuredImage {
-          url
-          altText
-          width
-          height
+        images(first: 6) {
+          nodes {
+            url
+            altText
+          }
+        }
+        options {
+          name
+          optionValues {
+            name
+          }
         }
         priceRange {
           minVariantPrice {
@@ -88,10 +117,29 @@ const GALLERY_PRODUCTS_QUERY = `#graphql
             currencyCode
           }
         }
-        variants(first: 1) {
+        variants(first: 50) {
           nodes {
             id
             availableForSale
+            price {
+              amount
+              currencyCode
+            }
+            selectedOptions {
+              name
+              value
+            }
+          }
+        }
+        media(first: 10) {
+          nodes {
+            mediaContentType
+            ... on Model3d {
+              sources {
+                url
+                format
+              }
+            }
           }
         }
       }
