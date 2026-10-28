@@ -393,6 +393,31 @@
   color: var(--accent-2);
   font-weight: 600;
 }
+.gal-skip-tour {
+  position: absolute;
+  z-index: 30;
+  right: 20px;
+  bottom: 22px;
+  padding: 10px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 999px;
+  background: rgba(14, 14, 15, 0.45);
+  backdrop-filter: blur(6px);
+  color: #fff;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  cursor: pointer;
+  animation: gal-fade 0.6s ease 0.8s both;
+}
+.gal-skip-tour:hover {
+  background: linear-gradient(to right, var(--accent), var(--accent-2));
+  border-color: var(--accent-2);
+  color: #1b1408;
+}
+
 .gal-reticle {
   position: absolute;
   z-index: 20;

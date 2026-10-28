@@ -19,6 +19,16 @@ export default async function handleRequest(
       checkoutDomain: context.env.PUBLIC_CHECKOUT_DOMAIN,
       storeDomain: context.env.PUBLIC_STORE_DOMAIN,
     },
+    // Same sources scripts fall back to by default, plus WebAssembly for the meshopt
+    // decoder that unpacks the gallery's mannequin models ('wasm-unsafe-eval' allows
+    // compiling wasm only, not JS eval). Hydrogen appends the nonce itself.
+    scriptSrc: [
+      "'self'",
+      "'wasm-unsafe-eval'",
+      'https://cdn.shopify.com',
+      'https://shopify.com',
+      ...(import.meta.env.DEV ? ['http://localhost:*'] : []),
+    ],
     // Josefin Sans from Google Fonts, and 3D models fetched from the Shopify CDN
     styleSrc: ['https://fonts.googleapis.com'],
     fontSrc: ['https://fonts.gstatic.com'],

@@ -1,7 +1,28 @@
 import * as THREE from 'three';
 import {Sky} from 'three/examples/jsm/objects/Sky.js';
 import {GLTFLoader} from 'three/examples/jsm/loaders/GLTFLoader.js';
+import {MeshoptDecoder} from 'three/examples/jsm/libs/meshopt_decoder.module.js';
+import {EffectComposer} from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import {RenderPass} from 'three/examples/jsm/postprocessing/RenderPass.js';
+import {UnrealBloomPass} from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import {OutputPass} from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type {Gender, GalleryProduct} from './types';
+
+/** Display mannequins built with MPFB2 (CC0); meshes are named Body, Shirt and Pants. */
+const POSES = ['relaxed', 'hand_on_hip', 'pocket'] as const;
+type Pose = (typeof POSES)[number];
+const mannequinUrl = (gender: Gender, pose: Pose) =>
+  `/models/mannequin-${gender === 'women' ? 'female' : 'male'}-${pose}.glb`;
+
+/**
+ * Where the front and back panels of each mannequin's tee sit in its UV map, as
+ * [x, y, width, height] fractions of the texture (origin top-left). The back panel
+ * is laid out upside down.
+ */
+const SHIRT_PANELS: Record<Gender, {front: number[]; back: number[]}> = {
+  men: {front: [0, 0.49, 0.565, 0.51], back: [0, 0, 0.53, 0.49]},
+  women: {front: [0.008, 0.04, 0.612, 0.58], back: [0.418, 0.39, 0.568, 0.58]},
+};
 
 // ---------- layout (metres) ----------
 const R = 14; // rotunda radius
@@ -14,6 +35,15 @@ const RAIL_R = TERRACE_R - 0.5;
 const FOUNTAIN_R = 3.6;
 const EYE = 1.65;
 const START = new THREE.Vector3(R + 4.6, EYE, 0);
+/**
+ * Late-afternoon sun, 17° above the horizon. It sits off to the right of the entrance
+ * view, so it slants through the arches on that side without glaring over the sign.
+ */
+const SUN_DIR = new THREE.Vector3().setFromSphericalCoords(
+  1,
+  THREE.MathUtils.degToRad(73),
+  THREE.MathUtils.degToRad(197.5),
+);
 
 export const ACCENT = 0xf4a21d;
 const CHARCOAL = 0x2d2d2f;
@@ -23,6 +53,7 @@ export interface SceneCallbacks {
   onReady(): void;
   onHover(product: GalleryProduct | null): void;
   onSelect(product: GalleryProduct): void;
+  onTourEnd?(): void;
 }
 
 interface Figure {
@@ -31,9 +62,19 @@ interface Figure {
   body: THREE.Group | null;
   ring: THREE.Mesh<THREE.TorusGeometry, THREE.MeshStandardMaterial>;
   hit: THREE.Mesh;
+  /** garment colour sampled from the product photo */
   shirtColor: THREE.Color;
+  pantsColor: THREE.Color;
+  isTrousers: boolean;
+  front: HTMLImageElement | null;
+  back: HTMLImageElement | null;
+  /** per-mannequin shirt textures (the two mannequins have different UV layouts) */
+  shirtTextures: Partial<Record<Gender, THREE.Texture>>;
+  /** materials owned by the current body, disposed when it is replaced */
+  ownMaterials: THREE.Material[];
   print: THREE.Texture | null;
   isModel: boolean;
+  pose: Pose;
   facing: number;
 }
 
@@ -56,6 +97,10 @@ export class GalleryScene {
   private envTarget: THREE.WebGLRenderTarget | null = null;
 
   private figures: Figure[] = [];
+  private templates: Record<Gender, Partial<Record<Pose, THREE.Object3D>>> = {women: {}, men: {}};
+  private templateLoads: Partial<Record<Gender, Promise<void>>> = {};
+  private gltfLoader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+  private marble = new THREE.MeshStandardMaterial({color: 0xf1eee8, roughness: 0.3});
   private obstacles: Obstacle[] = [];
   private sculpture = new THREE.Group();
   private raycaster = new THREE.Raycaster();
@@ -72,15 +117,24 @@ export class GalleryScene {
     null;
   private usePointerForHover = true;
 
-  // intro: aerial orbit, then a fly-in to the entrance
-  private mode: 'orbit' | 'flyin' | 'walk' = 'orbit';
+  // intro: aerial orbit, then a cinematic tour down to the entrance
+  private mode: 'orbit' | 'tour' | 'walk' = 'orbit';
   private orbitAngle = 0.6;
-  private flyT = 0;
-  private flyFrom = new THREE.Vector3();
-  private flyFromYaw = 0;
-  private flyFromPitch = 0;
-  private flyToYaw = Math.PI / 2;
+  private tour: {
+    curve: THREE.CatmullRomCurve3;
+    t: number;
+    duration: number;
+    endLook: THREE.Vector3;
+    endYaw: number;
+  } | null = null;
   private signPos = new THREE.Vector3();
+
+  // atmosphere + product spotlight
+  private composer: EffectComposer | null = null;
+  private shafts: THREE.Mesh[] = [];
+  private dust: THREE.Points | null = null;
+  private spot = new THREE.SpotLight(0xffe4bf, 0, 9, 0.4, 0.7, 1.4);
+  private focused: Figure | null = null;
 
   private gender: Gender;
   private labelEl: HTMLElement | null;
@@ -126,7 +180,7 @@ export class GalleryScene {
     );
     this.yaw.add(this.camera);
     this.scene.add(this.yaw);
-    this.scene.fog = new THREE.Fog(0xcfdbe4, 80, 420);
+    this.scene.fog = new THREE.Fog(0xead2b4, 70, 400);
 
     this.buildSkyAndLight(opts.mobile);
     this.buildArchitecture();
@@ -134,6 +188,24 @@ export class GalleryScene {
     this.buildTerrace();
     this.buildWelcomeSign(opts.logoUrl);
     this.buildFigures(opts.products);
+    this.buildAtmosphere(opts.mobile);
+    this.scene.add(this.spot, this.spot.target);
+
+    // a gentle glow on the chandelier, accents and sun glints; skipped on phones
+    if (!opts.mobile) {
+      const composer = new EffectComposer(renderer);
+      composer.addPass(new RenderPass(this.scene, this.camera));
+      composer.addPass(
+        new UnrealBloomPass(
+          new THREE.Vector2(container.clientWidth / 2, container.clientHeight / 2),
+          0.22,
+          0.4,
+          2.4,
+        ),
+      );
+      composer.addPass(new OutputPass());
+      this.composer = composer;
+    }
 
     this.placeOrbitCamera();
     this.bindInput();
@@ -146,13 +218,39 @@ export class GalleryScene {
 
   // ======================= public API =======================
 
+  /** Sweeps from the aerial view around and down the rotunda to the entrance. */
   enter() {
-    this.flyFrom.copy(this.yaw.position);
-    this.flyFromYaw = this.yaw.rotation.y;
-    this.flyFromPitch = this.pitch;
-    this.flyToYaw = this.entranceYaw();
-    this.flyT = 0;
-    this.mode = 'flyin';
+    const from = this.yaw.position.clone();
+    const a0 = Math.atan2(from.z, from.x);
+    const sweep = shortestAngle(a0, 0);
+    const r0 = Math.hypot(from.x, from.z);
+    const pts = [from];
+    const steps = 6;
+    for (let k = 1; k <= steps; k++) {
+      const f = k / steps;
+      const a = a0 + sweep * easeInOutCubic(f);
+      const r = THREE.MathUtils.lerp(r0, TERRACE_R + 3, 1 - Math.pow(1 - f, 2));
+      const y = THREE.MathUtils.lerp(from.y, 2.4, Math.pow(f, 0.8));
+      pts.push(new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r));
+    }
+    pts.push(START.clone());
+
+    const endYaw = this.entranceYaw();
+    const endLook = START.clone().add(
+      new THREE.Vector3(-Math.sin(endYaw), -0.04, -Math.cos(endYaw)).multiplyScalar(8),
+    );
+    this.tour = {
+      curve: new THREE.CatmullRomCurve3(pts, false, 'centripetal'),
+      t: 0,
+      duration: 7 + Math.abs(sweep) * 1.2,
+      endLook,
+      endYaw,
+    };
+    this.mode = 'tour';
+  }
+
+  skipTour() {
+    if (this.tour) this.tour.t = 1;
   }
 
   /**
@@ -183,15 +281,95 @@ export class GalleryScene {
   setGender(gender: Gender) {
     if (gender === this.gender) return;
     this.gender = gender;
-    for (const f of this.figures) {
-      if (f.isModel) continue;
-      if (f.body) {
-        f.root.remove(f.body);
-        disposeObject(f.body, false);
-      }
-      f.body = buildMannequin(gender, f.shirtColor, f.print);
-      f.root.add(f.body);
+    this.loadTemplates(gender).then(() => {
+      if (this.disposed || this.gender !== gender) return;
+      for (const f of this.figures) this.dress(f);
+    });
+  }
+
+  /** Loads every pose of one fit's mannequin once; onEach fires as each file settles. */
+  private loadTemplates(gender: Gender, onEach?: () => void) {
+    this.templateLoads[gender] ??= Promise.all(
+      POSES.map(
+        (pose) =>
+          new Promise<void>((resolve) => {
+            this.gltfLoader.load(
+              mannequinUrl(gender, pose),
+              (gltf) => {
+                this.templates[gender][pose] = gltf.scene;
+                onEach?.();
+                resolve();
+              },
+              undefined,
+              () => {
+                onEach?.();
+                resolve();
+              },
+            );
+          }),
+      ),
+    ).then(() => undefined);
+    return this.templateLoads[gender];
+  }
+
+  /** (Re)builds a figure's body for the current gender, dressed in its product. */
+  private dress(f: Figure) {
+    if (f.isModel) return;
+    if (f.body) {
+      f.root.remove(f.body);
+      if (f.ownMaterials.length) f.ownMaterials.forEach((m) => m.dispose());
+      // procedural bodies own their geometry; mannequin clones share the template's
+      else disposeObject(f.body, false);
+      f.ownMaterials = [];
     }
+
+    const poses = this.templates[this.gender];
+    const template = poses[f.pose] ?? POSES.map((p) => poses[p]).find(Boolean);
+    if (!template) {
+      f.print ??= f.front ? makePrintTexture(f.front, this.renderer) : null;
+      f.body = buildMannequin(this.gender, f.shirtColor, f.print);
+      f.root.add(f.body);
+      return;
+    }
+
+    let map: THREE.Texture | null = null;
+    if (!f.isTrousers && f.front) {
+      map = f.shirtTextures[this.gender] ??= makeShirtTexture(
+        SHIRT_PANELS[this.gender],
+        f.front,
+        f.back ?? f.front,
+        f.shirtColor,
+        this.renderer,
+      );
+    }
+    const shirt = new THREE.MeshStandardMaterial({
+      color: map ? 0xffffff : f.isTrousers ? 0xf2f0ec : f.shirtColor,
+      map,
+      roughness: 0.88,
+      side: THREE.DoubleSide,
+    });
+    const pants = new THREE.MeshStandardMaterial({
+      color: f.pantsColor,
+      roughness: 0.86,
+      side: THREE.DoubleSide,
+    });
+    f.ownMaterials = [shirt, pants];
+
+    const body = template.clone(true);
+    body.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      if (mesh.name.startsWith('Shirt')) mesh.material = shirt;
+      else if (mesh.name.startsWith('Pants')) mesh.material = pants;
+      else mesh.material = this.marble;
+    });
+    const group = new THREE.Group();
+    group.position.y = 0.55; // pedestal top
+    group.add(body);
+    f.body = group;
+    f.root.add(group);
   }
 
   setMove(x: number, y: number) {
@@ -212,6 +390,7 @@ export class GalleryScene {
     disposeObject(this.scene, true);
     this.envTarget?.dispose();
     this.pmrem.dispose();
+    this.composer?.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
@@ -222,25 +401,30 @@ export class GalleryScene {
     const sky = new Sky();
     sky.scale.setScalar(2000);
     const u = sky.material.uniforms;
-    u.turbidity.value = 3.5;
-    u.rayleigh.value = 1.3;
-    u.mieCoefficient.value = 0.004;
-    u.mieDirectionalG.value = 0.82;
-    const sun = new THREE.Vector3().setFromSphericalCoords(
-      1,
-      THREE.MathUtils.degToRad(62),
-      THREE.MathUtils.degToRad(215),
-    );
+    // golden hour: a low sun in a warm, hazy sky
+    u.turbidity.value = 7;
+    u.rayleigh.value = 2.4;
+    u.mieCoefficient.value = 0.006;
+    u.mieDirectionalG.value = 0.86;
+    const sun = SUN_DIR.clone();
     u.sunPosition.value.copy(sun);
+    // The sun disc is ~19000x brighter than the sky; in the half-float bloom buffer that
+    // overflows to Infinity and the blur turns the whole frame black, so cap it.
+    sky.material.onBeforeCompile = (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        'gl_FragColor = vec4( texColor, 1.0 );',
+        'gl_FragColor = vec4( min( texColor, vec3( 2.7 ) ), 1.0 );',
+      );
+    };
     this.scene.add(sky);
 
     // Image-based lighting from a soft sky-to-sand gradient. (Baking the Sky shader itself
     // overflows half-float targets around the sun disc and turns every lit surface black.)
     const envScene = new THREE.Scene();
     const envGeo = new THREE.SphereGeometry(40, 32, 16);
-    const top = new THREE.Color(0x9ec4e4);
-    const horizon = new THREE.Color(0xf3ead9);
-    const ground = new THREE.Color(0xb7a68c);
+    const top = new THREE.Color(0x8fb2d4);
+    const horizon = new THREE.Color(0xf6d2a2);
+    const ground = new THREE.Color(0xb0967a);
     const colors: number[] = [];
     const pos = envGeo.attributes.position;
     const c = new THREE.Color();
@@ -259,10 +443,10 @@ export class GalleryScene {
     envGeo.dispose();
     envMat.dispose();
 
-    const hemi = new THREE.HemisphereLight(0xe3ecf5, 0x9a8c78, 0.65);
+    const hemi = new THREE.HemisphereLight(0xf0dcc4, 0x8a7360, 0.6);
     this.scene.add(hemi);
 
-    const dir = new THREE.DirectionalLight(0xfff0dc, 2.4);
+    const dir = new THREE.DirectionalLight(0xffc98c, 3.1);
     dir.position.copy(sun).multiplyScalar(60);
     dir.castShadow = true;
     const size = mobile ? 1024 : 2048;
@@ -456,7 +640,7 @@ export class GalleryScene {
     const bulbMat = new THREE.MeshStandardMaterial({
       color: 0xfff3dc,
       emissive: 0xffd9a0,
-      emissiveIntensity: 2.2,
+      emissiveIntensity: 5,
     });
     const bulbGeo = new THREE.SphereGeometry(0.11, 12, 8);
     for (let i = 0; i < 18; i++) {
@@ -588,6 +772,68 @@ export class GalleryScene {
     this.scene.add(plinth);
   }
 
+  /** Shafts of low sun through the arches that face it, and dust drifting in the light. */
+  private buildAtmosphere(mobile: boolean) {
+    const travel = SUN_DIR.clone().negate(); // the direction sunlight travels
+    const sunAz = Math.atan2(SUN_DIR.z, SUN_DIR.x);
+    const mat = new THREE.MeshBasicMaterial({
+      map: makeShaftTexture(),
+      color: 0xffd6a0,
+      transparent: true,
+      opacity: 0.12,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      fog: false,
+    });
+    const length = 12;
+    const flat = new THREE.PlaneGeometry(ARCH_HALF * 1.9, length).rotateX(-Math.PI / 2);
+    flat.translate(0, 0, length / 2);
+    const upright = new THREE.PlaneGeometry(ARCH_HALF * 1.9, length)
+      .rotateX(-Math.PI / 2)
+      .rotateZ(Math.PI / 2)
+      .translate(0, 0, length / 2);
+    for (let i = 0; i < SEGMENTS; i++) {
+      const theta = (i / SEGMENTS) * Math.PI * 2;
+      if (Math.abs(shortestAngle(theta, sunAz)) > 0.7) continue;
+      const shaft = new THREE.Group();
+      shaft.position.set(Math.cos(theta) * (R + 0.4), 2.7, Math.sin(theta) * (R + 0.4));
+      shaft.lookAt(shaft.position.clone().add(travel));
+      for (const geo of [flat, upright]) {
+        const m = new THREE.Mesh(geo, mat.clone());
+        m.renderOrder = 2;
+        shaft.add(m);
+        this.shafts.push(m);
+      }
+      this.scene.add(shaft);
+    }
+    mat.dispose();
+
+    const count = mobile ? 220 : 520;
+    const pos = new Float32Array(count * 3);
+    const rand = rng(11);
+    for (let i = 0; i < count; i++) {
+      const a = rand() * Math.PI * 2;
+      const r = Math.sqrt(rand()) * (R - 1.5);
+      pos.set([Math.cos(a) * r, 0.3 + rand() * 7, Math.sin(a) * r], i * 3);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    this.dust = new THREE.Points(
+      geo,
+      new THREE.PointsMaterial({
+        map: makeDotTexture(),
+        color: 0xffe6c0,
+        size: 0.045,
+        transparent: true,
+        opacity: 0.7,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }),
+    );
+    this.scene.add(this.dust);
+  }
+
   private buildWelcomeSign(logoUrl: string) {
     const canvas = document.createElement('canvas');
     canvas.width = 768;
@@ -680,25 +926,34 @@ export class GalleryScene {
     const slots = figureSlots(products.length);
     const imageLoader = new THREE.ImageLoader();
     imageLoader.setCrossOrigin('anonymous');
-    const gltfLoader = new GLTFLoader();
+    const gltfLoader = this.gltfLoader;
 
-    let pending = products.length;
+    const loadImage = (url: string | null) =>
+      new Promise<HTMLImageElement | null>((resolve) => {
+        if (!url) return resolve(null);
+        imageLoader.load(sizedImage(url, 900), resolve, undefined, () => resolve(null));
+      });
+
+    // the current fit's mannequin poses + one task per product
+    const total = products.length + POSES.length;
     let done = 0;
-    const finishOne = () => {
+    let ready = false;
+    const tick = () => {
       done += 1;
-      this.cb.onProgress(Math.round((done / Math.max(pending, 1)) * 100));
-      if (done >= pending) this.cb.onReady();
+      this.cb.onProgress(Math.round((done / total) * 100));
     };
-    if (pending === 0) this.cb.onReady();
+    const finish = () => {
+      if (ready || this.disposed) return;
+      ready = true;
+      this.cb.onProgress(100);
+      this.cb.onReady();
+    };
     // never leave the visitor stuck on the loader
-    const safety = window.setTimeout(() => {
-      if (done < pending) {
-        pending = done;
-        this.cb.onProgress(100);
-        this.cb.onReady();
-      }
-    }, 15000);
+    const safety = window.setTimeout(finish, 15000);
     this.cleanups.push(() => window.clearTimeout(safety));
+
+    const templatesLoaded = this.loadTemplates(this.gender, tick);
+    const productTasks: Promise<void>[] = [];
 
     products.forEach((product, i) => {
       const slot = slots[i];
@@ -729,6 +984,9 @@ export class GalleryScene {
       hit.userData.figureIndex = i;
       root.add(hit);
 
+      const isTrousers = /trouser|pant|jogger|cargo/i.test(
+        `${product.productType ?? ''} ${product.title}`,
+      );
       const figure: Figure = {
         product,
         root,
@@ -736,70 +994,69 @@ export class GalleryScene {
         ring,
         hit,
         shirtColor: new THREE.Color(0xdddddd),
+        pantsColor: new THREE.Color(0x1f1f22),
+        isTrousers,
+        front: null,
+        back: null,
+        shirtTextures: {},
+        ownMaterials: [],
         print: null,
         isModel: false,
+        pose: POSES[i % POSES.length],
         facing,
       };
       this.figures.push(figure);
       this.obstacles.push({x: slot.x, z: slot.z, r: 1.15});
 
-      const buildProcedural = () => {
-        const image = product.images[0]?.url;
-        if (!image) {
-          figure.body = buildMannequin(this.gender, figure.shirtColor, null);
-          root.add(figure.body);
-          finishOne();
-          return;
-        }
-        imageLoader.load(
-          sizedImage(image, 700),
-          (img) => {
-            if (this.disposed) return;
-            figure.shirtColor = sampleShirtColor(img);
-            figure.print = makePrintTexture(img, this.renderer);
-            figure.body = buildMannequin(this.gender, figure.shirtColor, figure.print);
-            root.add(figure.body);
-            finishOne();
-          },
-          undefined,
-          () => {
-            if (this.disposed) return;
-            figure.body = buildMannequin(this.gender, figure.shirtColor, null);
-            root.add(figure.body);
-            finishOne();
-          },
-        );
-      };
+      const {front, back} = pickFlatLays(product);
+      const loadPhotos = Promise.all([loadImage(front), loadImage(back)]).then(([f, b]) => {
+        figure.front = f;
+        figure.back = b;
+        if (f && isTrousers) figure.pantsColor = sampleGarmentColor(f, TROUSER_SAMPLES);
+        else if (f) figure.shirtColor = sampleShirtColor(f);
+      });
 
-      if (product.modelUrl) {
-        gltfLoader.load(
-          product.modelUrl,
-          (gltf) => {
-            if (this.disposed) return;
-            const model = gltf.scene;
-            const box = new THREE.Box3().setFromObject(model);
-            const size = box.getSize(new THREE.Vector3());
-            const scale = 1.8 / Math.max(size.y, 0.001);
-            model.scale.setScalar(scale);
-            box.setFromObject(model);
-            const center = box.getCenter(new THREE.Vector3());
-            model.position.set(-center.x, 0.55 - box.min.y, -center.z);
-            model.traverse((o) => {
-              if ((o as THREE.Mesh).isMesh) o.castShadow = true;
-            });
-            const group = new THREE.Group();
-            group.add(model);
-            figure.body = group;
-            figure.isModel = true;
-            root.add(group);
-            finishOne();
-          },
-          undefined,
-          () => buildProcedural(),
-        );
-      } else {
-        buildProcedural();
-      }
+      const loadOwnModel = () =>
+        new Promise<boolean>((resolve) => {
+          if (!product.modelUrl) return resolve(false);
+          gltfLoader.load(
+            product.modelUrl,
+            (gltf) => {
+              const model = gltf.scene;
+              const box = new THREE.Box3().setFromObject(model);
+              const size = box.getSize(new THREE.Vector3());
+              model.scale.setScalar(1.8 / Math.max(size.y, 0.001));
+              box.setFromObject(model);
+              const center = box.getCenter(new THREE.Vector3());
+              model.position.set(-center.x, 0.55 - box.min.y, -center.z);
+              model.traverse((o) => {
+                if ((o as THREE.Mesh).isMesh) o.castShadow = true;
+              });
+              const group = new THREE.Group();
+              group.add(model);
+              figure.body = group;
+              figure.isModel = true;
+              root.add(group);
+              resolve(true);
+            },
+            undefined,
+            () => resolve(false),
+          );
+        });
+
+      productTasks.push(
+        Promise.all([loadPhotos, loadOwnModel()]).then(() => {
+          tick();
+        }),
+      );
+    });
+
+    Promise.all([templatesLoaded, ...productTasks]).then(() => {
+      if (this.disposed) return;
+      for (const f of this.figures) this.dress(f);
+      finish();
+      // fetch the other fit in the background so the women/men switch is instant
+      this.loadTemplates(this.gender === 'women' ? 'men' : 'women');
     });
   }
 
@@ -897,6 +1154,7 @@ export class GalleryScene {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    this.composer?.setSize(w, h);
   }
 
   // ======================= frame loop =======================
@@ -914,21 +1172,82 @@ export class GalleryScene {
     if (this.mode === 'orbit') {
       this.orbitAngle += dt * 0.05;
       this.placeOrbitCamera();
-    } else if (this.mode === 'flyin') {
-      this.flyT = Math.min(1, this.flyT + dt / 2.6);
-      const k = easeInOutCubic(this.flyT);
-      this.yaw.position.lerpVectors(this.flyFrom, START, k);
-      this.yaw.rotation.y = lerpAngle(this.flyFromYaw, this.flyToYaw, k);
-      this.pitch = THREE.MathUtils.lerp(this.flyFromPitch, -0.04, k);
-      this.camera.rotation.x = this.pitch;
-      if (this.flyT >= 1) this.mode = 'walk';
+    } else if (this.mode === 'tour' && this.tour) {
+      this.updateTour(dt);
     } else {
       this.updateWalk(dt);
     }
 
+    this.updateAtmosphere(dt, t);
     this.updateHover(dt);
-    this.renderer.render(this.scene, this.camera);
+    if (this.composer) this.composer.render(dt);
+    else this.renderer.render(this.scene, this.camera);
   };
+
+  private updateTour(dt: number) {
+    const tour = this.tour!;
+    tour.t = Math.min(1, tour.t + dt / tour.duration);
+    const k = easeInOutSine(tour.t);
+    const p = tour.curve.getPointAt(k);
+    this.yaw.position.copy(p);
+    // watch the rotunda, then settle onto the entrance view for the last stretch
+    const look = new THREE.Vector3(0, 4, 0).lerp(
+      tour.endLook,
+      THREE.MathUtils.smoothstep(k, 0.68, 1),
+    );
+    const d = look.sub(p);
+    this.yaw.rotation.y = Math.atan2(-d.x, -d.z);
+    this.pitch = Math.atan2(d.y, Math.hypot(d.x, d.z));
+    this.camera.rotation.x = this.pitch;
+    if (tour.t >= 1) {
+      this.yaw.position.copy(START);
+      this.yaw.rotation.y = tour.endYaw;
+      this.tour = null;
+      this.mode = 'walk';
+      this.cb.onTourEnd?.();
+    }
+  }
+
+  private updateAtmosphere(dt: number, t: number) {
+    this.shafts.forEach((s, i) => {
+      (s.material as THREE.MeshBasicMaterial).opacity = 0.11 + Math.sin(t * 0.6 + i * 1.7) * 0.035;
+    });
+    if (this.dust) {
+      this.dust.rotation.y += dt * 0.012;
+      this.dust.position.y = Math.sin(t * 0.25) * 0.15;
+    }
+
+    // product spotlight: the figure you're looking at, or the nearest within a few steps
+    let focus: Figure | null = null;
+    if (this.mode === 'walk') {
+      focus = this.hovered;
+      if (!focus) {
+        let best = 4.6;
+        const p = this.yaw.position;
+        for (const f of this.figures) {
+          const d = Math.hypot(f.root.position.x - p.x, f.root.position.z - p.z);
+          if (d < best) {
+            best = d;
+            focus = f;
+          }
+        }
+      }
+    }
+    if (focus !== this.focused) {
+      if (this.focused) this.focused.ring.material.emissiveIntensity = 0.1;
+      this.focused = focus;
+      if (focus) {
+        const fp = focus.root.position;
+        const toCentre = new THREE.Vector3(-fp.x, 0, -fp.z).normalize();
+        this.spot.position.set(fp.x + toCentre.x * 1.4, 5.4, fp.z + toCentre.z * 1.4);
+        this.spot.target.position.set(fp.x, 1.3, fp.z);
+        this.spot.intensity = 0;
+        focus.ring.material.emissiveIntensity = 2.6;
+      }
+    }
+    const target = this.focused ? 30 : 0;
+    this.spot.intensity += (target - this.spot.intensity) * Math.min(1, dt * 3);
+  }
 
   private updateWalk(dt: number) {
     if (!this.enabled) {
@@ -990,16 +1309,15 @@ export class GalleryScene {
       next = this.pick(this.usePointerForHover ? this.pointer : new THREE.Vector2(0, 0), 9);
     }
     if (next !== this.hovered) {
-      if (this.hovered) this.hovered.ring.material.emissiveIntensity = 0.1;
       this.hovered = next;
-      if (next) next.ring.material.emissiveIntensity = 1.6;
       this.renderer.domElement.style.cursor = next ? 'pointer' : 'grab';
       this.cb.onHover(next?.product ?? null);
     }
 
-    // hovered figure turns slowly on its pedestal; the others ease back
+    // the spotlit figure turns slowly on its pedestal so the piece is seen all round;
+    // the others ease back to face the centre
     for (const f of this.figures) {
-      if (f === this.hovered) {
+      if (f === this.focused) {
         f.root.rotation.y += dt * 0.6;
       } else {
         const diff = shortestAngle(f.root.rotation.y, f.facing);
@@ -1186,23 +1504,53 @@ function sizedImage(url: string, width: number) {
   }
 }
 
-/** Reads the garment colour from plain areas of the product photo (below the print). */
+/** Sample points (fractions of the photo) on plain fabric below a tee's print. */
+const SHIRT_SAMPLES = [
+  [0.5, 0.84],
+  [0.38, 0.81],
+  [0.62, 0.81],
+  [0.31, 0.69],
+  [0.69, 0.69],
+];
+/** Sample points down the legs of a flat-lay pair of trousers. */
+const TROUSER_SAMPLES = [
+  [0.42, 0.35],
+  [0.58, 0.35],
+  [0.4, 0.55],
+  [0.6, 0.55],
+  [0.5, 0.2],
+];
+
+/**
+ * Picks the flat-lay photos to print on the tee: images whose file name or alt text says
+ * "front"/"flat" and "back", falling back to the first image.
+ */
+function pickFlatLays(product: GalleryProduct) {
+  const label = (i: {url: string; altText: string | null}) =>
+    `${i.altText ?? ''} ${i.url.split('?')[0].split('/').pop() ?? ''}`.toLowerCase();
+  const images = product.images;
+  const front =
+    images.find((i) => /front|flat/.test(label(i))) ??
+    images.find((i) => !/back|model/.test(label(i))) ??
+    images[0];
+  const back = images.find((i) => /back/.test(label(i)) && i !== front);
+  return {front: front?.url ?? null, back: back?.url ?? null};
+}
+
 function sampleShirtColor(img: HTMLImageElement) {
+  return sampleGarmentColor(img, SHIRT_SAMPLES);
+}
+
+/** Reads the garment colour at a few points of a product photo, ignoring the backdrop. */
+function sampleGarmentColor(img: HTMLImageElement, points: number[][]) {
   const c = document.createElement('canvas');
   c.width = c.height = 64;
   const ctx = c.getContext('2d', {willReadFrequently: true});
   if (!ctx) return new THREE.Color(0xdddddd);
   try {
     ctx.drawImage(img, 0, 0, 64, 64);
-    const pts = [
-      [32, 54],
-      [24, 52],
-      [40, 52],
-      [20, 44],
-      [44, 44],
-    ];
-    const samples = pts.map(([x, y]) => {
-      const d = ctx.getImageData(x, y, 1, 1).data;
+    const samples = points.map(([x, y]) => {
+      const d = ctx.getImageData(Math.round(x * 63), Math.round(y * 63), 1, 1).data;
       return [d[0], d[1], d[2]] as const;
     });
     // ignore near-white studio background, take the median luminance sample
@@ -1230,6 +1578,89 @@ function makePrintTexture(img: HTMLImageElement, renderer: THREE.WebGLRenderer) 
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
   return tex;
+}
+
+/**
+ * Paints flat-lay product photos onto the mannequin tee's front and back UV panels.
+ * The studio backdrop around the garment is replaced with the garment colour so it
+ * doesn't show as pale patches at the collar and armholes.
+ */
+function makeShirtTexture(
+  panels: {front: number[]; back: number[]},
+  front: HTMLImageElement,
+  back: HTMLImageElement,
+  base: THREE.Color,
+  renderer: THREE.WebGLRenderer,
+) {
+  const size = 1024;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d', {willReadFrequently: true})!;
+  const baseCss = `#${base.getHexString(THREE.SRGBColorSpace)}`;
+  ctx.fillStyle = baseCss;
+  ctx.fillRect(0, 0, size, size);
+
+  const paint = (img: HTMLImageElement, [x, y, w, h]: number[], upsideDown: boolean) => {
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    const px = Math.round(x * size);
+    const py = Math.round(y * size);
+    const pw = Math.round(w * size);
+    const ph = Math.round(h * size);
+    // the garment silhouette inside a typical square flat-lay
+    const [sx, sy, sw, sh] = [iw * 0.04, ih * 0.06, iw * 0.92, ih * 0.9];
+    const tmp = document.createElement('canvas');
+    tmp.width = pw;
+    tmp.height = ph;
+    const t = tmp.getContext('2d', {willReadFrequently: true})!;
+    t.drawImage(img, sx, sy, sw, sh, 0, 0, pw, ph);
+    keyOutBackdrop(t, pw, ph, base);
+    ctx.save();
+    if (upsideDown) {
+      ctx.translate(px + pw, py + ph);
+      ctx.rotate(Math.PI);
+      ctx.drawImage(tmp, 0, 0);
+    } else {
+      ctx.drawImage(tmp, px, py);
+    }
+    ctx.restore();
+  };
+  paint(front, panels.front, false);
+  paint(back, panels.back, true);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.flipY = false; // glTF UV convention
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+/** Replaces near-white, low-saturation backdrop pixels with the garment colour. */
+function keyOutBackdrop(ctx: CanvasRenderingContext2D, w: number, h: number, base: THREE.Color) {
+  const srgb = {r: 0, g: 0, b: 0};
+  base.getRGB(srgb, THREE.SRGBColorSpace);
+  const [tr, tg, tb] = [srgb.r * 255, srgb.g * 255, srgb.b * 255];
+  // a white tee is its own backdrop colour; nothing to key
+  if (tr > 225 && tg > 225 && tb > 225) return;
+  try {
+    const data = ctx.getImageData(0, 0, w, h);
+    const p = data.data;
+    for (let i = 0; i < p.length; i += 4) {
+      const r = p[i];
+      const g = p[i + 1];
+      const b = p[i + 2];
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      if (min > 228 && max - min < 18) {
+        p[i] = tr;
+        p[i + 1] = tg;
+        p[i + 2] = tb;
+      }
+    }
+    ctx.putImageData(data, 0, 0);
+  } catch {
+    // cross-origin image without CORS: leave the backdrop as is
+  }
 }
 
 function rng(seed: number) {
@@ -1403,6 +1834,48 @@ function spacedText(ctx: CanvasRenderingContext2D, text: string, x: number, y: n
     cx += widths[i] + spacing;
   });
   ctx.textAlign = align;
+}
+
+function easeInOutSine(t: number) {
+  return -(Math.cos(Math.PI * t) - 1) / 2;
+}
+
+/** Soft-edged beam that is brightest where it enters and fades along its length. */
+function makeShaftTexture() {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 256;
+  const ctx = c.getContext('2d')!;
+  const along = ctx.createLinearGradient(0, 0, 0, 256);
+  along.addColorStop(0, 'rgba(255,255,255,1)');
+  along.addColorStop(0.55, 'rgba(255,255,255,0.35)');
+  along.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = along;
+  ctx.fillRect(0, 0, 128, 256);
+  // feather the sides
+  ctx.globalCompositeOperation = 'destination-in';
+  const across = ctx.createLinearGradient(0, 0, 128, 0);
+  across.addColorStop(0, 'rgba(0,0,0,0)');
+  across.addColorStop(0.3, 'rgba(0,0,0,1)');
+  across.addColorStop(0.7, 'rgba(0,0,0,1)');
+  across.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = across;
+  ctx.fillRect(0, 0, 128, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function makeDotTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 32;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 32, 32);
+  return new THREE.CanvasTexture(c);
 }
 
 function easeInOutCubic(t: number) {

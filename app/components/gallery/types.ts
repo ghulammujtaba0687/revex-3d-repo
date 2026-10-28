@@ -10,6 +10,7 @@ export interface GalleryProduct {
   id: string;
   handle: string;
   title: string;
+  productType: string | null;
   images: {url: string; altText: string | null}[];
   /** GLB from the product's 3D model media in Shopify, if one was uploaded. */
   modelUrl: string | null;

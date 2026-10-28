@@ -20,6 +20,7 @@ interface GalleryProductsQueryResult {
       id: string;
       title: string;
       handle: string;
+      productType: string;
       images: {nodes: Array<{url: string; altText: string | null}>};
       options: Array<{name: string; optionValues: Array<{name: string}>}>;
       priceRange: {minVariantPrice: {amount: string; currencyCode: string}};
@@ -54,6 +55,7 @@ export async function loader({context}: Route.LoaderArgs) {
       id: product.id,
       handle: product.handle,
       title: product.title,
+      productType: product.productType || null,
       images: product.images.nodes,
       modelUrl: glb?.url ?? null,
       options: product.options.map((o) => ({
@@ -99,6 +101,7 @@ const GALLERY_PRODUCTS_QUERY = `#graphql
         id
         title
         handle
+        productType
         images(first: 6) {
           nodes {
             url

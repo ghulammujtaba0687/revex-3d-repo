@@ -386,7 +386,7 @@ export type GalleryProductsQueryVariables = StorefrontAPI.Exact<{
 export type GalleryProductsQuery = {
   products: {
     nodes: Array<
-      Pick<StorefrontAPI.Product, 'id' | 'title' | 'handle'> & {
+      Pick<StorefrontAPI.Product, 'id' | 'title' | 'handle' | 'productType'> & {
         images: {nodes: Array<Pick<StorefrontAPI.Image, 'url' | 'altText'>>};
         options: Array<
           Pick<StorefrontAPI.ProductOption, 'name'> & {
@@ -1258,7 +1258,7 @@ interface GeneratedQueryTypes {
     return: FooterQuery;
     variables: FooterQueryVariables;
   };
-  '#graphql\n  query GalleryProducts(\n    $country: CountryCode\n    $language: LanguageCode\n    $first: Int\n  ) @inContext(country: $country, language: $language) {\n    products(first: $first, sortKey: UPDATED_AT, reverse: true) {\n      nodes {\n        id\n        title\n        handle\n        images(first: 6) {\n          nodes {\n            url\n            altText\n          }\n        }\n        options {\n          name\n          optionValues {\n            name\n          }\n        }\n        priceRange {\n          minVariantPrice {\n            amount\n            currencyCode\n          }\n        }\n        variants(first: 50) {\n          nodes {\n            id\n            availableForSale\n            price {\n              amount\n              currencyCode\n            }\n            selectedOptions {\n              name\n              value\n            }\n          }\n        }\n        media(first: 10) {\n          nodes {\n            mediaContentType\n            ... on Model3d {\n              sources {\n                url\n                format\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n': {
+  '#graphql\n  query GalleryProducts(\n    $country: CountryCode\n    $language: LanguageCode\n    $first: Int\n  ) @inContext(country: $country, language: $language) {\n    products(first: $first, sortKey: UPDATED_AT, reverse: true) {\n      nodes {\n        id\n        title\n        handle\n        productType\n        images(first: 6) {\n          nodes {\n            url\n            altText\n          }\n        }\n        options {\n          name\n          optionValues {\n            name\n          }\n        }\n        priceRange {\n          minVariantPrice {\n            amount\n            currencyCode\n          }\n        }\n        variants(first: 50) {\n          nodes {\n            id\n            availableForSale\n            price {\n              amount\n              currencyCode\n            }\n            selectedOptions {\n              name\n              value\n            }\n          }\n        }\n        media(first: 10) {\n          nodes {\n            mediaContentType\n            ... on Model3d {\n              sources {\n                url\n                format\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n': {
     return: GalleryProductsQuery;
     variables: GalleryProductsQueryVariables;
   };

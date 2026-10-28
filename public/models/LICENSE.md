@@ -1,0 +1,13 @@
+# Mannequin models
+
+`mannequin-*.glb` were generated with MPFB2 (MakeHuman for Blender) using the
+MakeHuman base mesh and the "Shirts 01" and "Pants 01" asset packs.
+
+All of these assets are released under CC0 1.0 (public domain); no attribution
+is required. See https://static.makehumancommunity.org/assets/assetpacks.html
+
+- Base mesh: MakeHuman system assets, CC0
+- Tees: `elvs_crude_t-shirt_male` (Elvaerwyn), `joepal_crude_t-shirt_female` (Joel Palmius), CC0
+- Trousers: `toigo_harem_pants` (Margaret Toigo), CC0
+
+Rebuild them with `tools/mannequin/build_all.ps1`.

@@ -31,6 +31,7 @@ export function Gallery({products}: {products: GalleryProduct[]}) {
   const [selected, setSelected] = useState<GalleryProduct | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isTouch, setIsTouch] = useState(false);
+  const [touring, setTouring] = useState(false);
   const [webglError, setWebglError] = useState(false);
 
   // The store header/footer are hidden while the full-screen gallery is mounted.
@@ -64,6 +65,7 @@ export function Gallery({products}: {products: GalleryProduct[]}) {
             onReady: () => window.setTimeout(() => setPhase((p) => (p === 'loading' ? 'intro' : p)), 500),
             onHover: setHovered,
             onSelect: setSelected,
+            onTourEnd: () => setTouring(false),
           },
         });
         if (import.meta.env.DEV) (window as any).__gallery = sceneRef.current;
@@ -100,6 +102,7 @@ export function Gallery({products}: {products: GalleryProduct[]}) {
 
   const enter = () => {
     sceneRef.current?.enter();
+    setTouring(true);
     setPhase('walk');
   };
 
@@ -204,7 +207,13 @@ export function Gallery({products}: {products: GalleryProduct[]}) {
         </>
       )}
 
-      {phase === 'walk' && (
+      {phase === 'walk' && touring && (
+        <button className="gal-skip-tour" onClick={() => sceneRef.current?.skipTour()}>
+          Skip tour
+        </button>
+      )}
+
+      {phase === 'walk' && !touring && (
         <>
           <div className="gal-hint">
             {hovered ? (
