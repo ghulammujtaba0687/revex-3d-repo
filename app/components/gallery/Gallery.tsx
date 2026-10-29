@@ -32,7 +32,7 @@ export function Gallery({products}: {products: GalleryProduct[]}) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [isTouch, setIsTouch] = useState(false);
   const [touring, setTouring] = useState(false);
-  const [webglError, setWebglError] = useState(false);
+  const [webglError, setWebglError] = useState<string | false>(false);
 
   // The store header/footer are hidden while the full-screen gallery is mounted.
   useEffect(() => {
@@ -73,7 +73,7 @@ export function Gallery({products}: {products: GalleryProduct[]}) {
       .catch((error) => {
         // never leave the visitor stuck on the loader: show the intro with a way to the shop
         console.error(error);
-        setWebglError(true);
+        setWebglError(error instanceof Error ? error.message : String(error));
         setPhase('intro');
       });
 
@@ -173,6 +173,7 @@ export function Gallery({products}: {products: GalleryProduct[]}) {
           {webglError && (
             <p className="gal-error">
               Your browser couldn&apos;t start the 3D view. You can still shop the collection.
+              {import.meta.env.DEV && <code className="gal-error-detail">{webglError}</code>}
             </p>
           )}
         </div>

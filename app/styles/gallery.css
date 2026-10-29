@@ -264,6 +264,13 @@
 .gal-skip:hover {
   color: var(--accent);
 }
+.gal-error-detail {
+  display: block;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #ffd2c9;
+  user-select: text;
+}
 .gal-error {
   margin-top: 16px;
   max-width: 320px;

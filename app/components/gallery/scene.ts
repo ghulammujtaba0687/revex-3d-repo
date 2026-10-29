@@ -167,7 +167,13 @@ export class GalleryScene {
     this.cb = opts.callbacks;
     this.usePointerForHover = !opts.mobile;
 
-    const renderer = new THREE.WebGLRenderer({antialias: true, powerPreference: 'high-performance'});
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({antialias: true, powerPreference: 'high-performance'});
+    } catch {
+      // some GPUs/drivers refuse the high-performance multisampled context; ask for less
+      renderer = new THREE.WebGLRenderer({antialias: false, powerPreference: 'default'});
+    }
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, opts.mobile ? 1.5 : 1.75));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -451,6 +457,9 @@ export class GalleryScene {
     this.pmrem.dispose();
     this.composer?.dispose();
     this.renderer.dispose();
+    // release the GL context now rather than at garbage collection, so reloads and
+    // route changes don't pile up contexts until the browser refuses new ones
+    this.renderer.forceContextLoss();
     this.renderer.domElement.remove();
   }
 
