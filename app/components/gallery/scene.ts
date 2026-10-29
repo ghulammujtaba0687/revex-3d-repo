@@ -74,6 +74,8 @@ interface Figure {
   shirtColor: THREE.Color;
   pantsColor: THREE.Color;
   isTrousers: boolean;
+  /** fabric pattern for all-over print tees, wrapped round the whole shirt */
+  pattern: THREE.Texture | null;
   front: HTMLImageElement | null;
   back: HTMLImageElement | null;
   /** per-mannequin shirt textures (the two mannequins have different UV layouts) */
@@ -374,7 +376,9 @@ export class GalleryScene {
 
     let map: THREE.Texture | null = null;
     const fit = this.shirtFits[this.gender];
-    if (!f.isTrousers && f.front && fit) {
+    if (f.pattern) {
+      map = f.pattern;
+    } else if (!f.isTrousers && f.front && fit) {
       map = f.shirtTextures[this.gender] ??= makeShirtTexture(
         fit,
         f.front,
@@ -384,11 +388,12 @@ export class GalleryScene {
       );
     }
     const shirt = new THREE.MeshStandardMaterial({
-      color: map ? 0xffffff : f.isTrousers ? 0xf2f0ec : f.shirtColor,
+      color: map ? 0xffffff : f.isTrousers ? stylingTee(f.pantsColor) : f.shirtColor,
       map,
       roughness: 0.88,
       side: THREE.DoubleSide,
     });
+    if (f.pattern) wrapPattern(shirt);
     const pants = new THREE.MeshStandardMaterial({
       color: f.pantsColor,
       roughness: 0.86,
@@ -1096,6 +1101,7 @@ export class GalleryScene {
         shirtColor: new THREE.Color(0xdddddd),
         pantsColor: new THREE.Color(0x1f1f22),
         isTrousers,
+        pattern: null,
         front: null,
         back: null,
         shirtTextures: {},
@@ -1114,8 +1120,15 @@ export class GalleryScene {
         const swap = f && b && designScore(b) > designScore(f) * 1.2;
         figure.front = swap ? b : f;
         figure.back = swap ? f : b;
-        if (f && isTrousers) figure.pantsColor = sampleGarmentColor(f, TROUSER_SAMPLES);
-        else if (f) figure.shirtColor = sampleShirtColor(f);
+        if (f && isTrousers) {
+          // the flat-lay's own shading makes the sample a little darker than the fabric
+          const c = sampleGarmentColor(f, TROUSER_SAMPLES).multiplyScalar(1.35);
+          figure.pantsColor = new THREE.Color(Math.min(c.r, 1), Math.min(c.g, 1), Math.min(c.b, 1));
+        }
+        else if (f) {
+          figure.shirtColor = sampleShirtColor(f);
+          if (isAllOverPrint(f)) figure.pattern = makePatternTexture(f, this.renderer);
+        }
       });
 
       const loadOwnModel = () =>
@@ -1667,6 +1680,98 @@ function designScore(img: HTMLImageElement) {
 
 function sampleShirtColor(img: HTMLImageElement) {
   return sampleGarmentColor(img, SHIRT_SAMPLES);
+}
+
+/**
+ * The plain tee styled with a trouser product: brand charcoal, so the trousers and the
+ * marble both stand out, or light heather grey when the trousers are themselves near black.
+ */
+function stylingTee(pants: THREE.Color) {
+  const lum = 0.2126 * pants.r + 0.7152 * pants.g + 0.0722 * pants.b; // linear
+  return lum < 0.02 ? 0xb4b4b6 : 0x2b2b2e;
+}
+
+/**
+ * An all-over print covers the whole garment, so the plain strip above the hem (below
+ * any chest artwork) is patterned too. Measures how varied that strip is.
+ */
+function isAllOverPrint(img: HTMLImageElement) {
+  const n = 64;
+  const c = document.createElement('canvas');
+  c.width = c.height = n;
+  const ctx = c.getContext('2d', {willReadFrequently: true});
+  if (!ctx) return false;
+  try {
+    ctx.drawImage(img, 0, 0, n, n);
+    const d = ctx.getImageData(Math.round(n * 0.3), Math.round(n * 0.8), Math.round(n * 0.4), Math.round(n * 0.1)).data;
+    const lum: number[] = [];
+    for (let i = 0; i < d.length; i += 4) {
+      const [r, g, b] = [d[i], d[i + 1], d[i + 2]];
+      if (Math.min(r, g, b) > 232 && Math.max(r, g, b) - Math.min(r, g, b) < 14) continue; // backdrop
+      lum.push(0.299 * r + 0.587 * g + 0.114 * b);
+    }
+    if (lum.length < 20) return false;
+    const mean = lum.reduce((a, b) => a + b, 0) / lum.length;
+    const sd = Math.sqrt(lum.reduce((a, b) => a + (b - mean) ** 2, 0) / lum.length);
+    return sd > 22;
+  } catch {
+    return false;
+  }
+}
+
+/** Real-world width (metres) of the patch of fabric used as the repeating tile. */
+const PATTERN_TILE_M = 0.42;
+
+/**
+ * Takes a patch of fabric from the lower torso of the flat-lay (clear of the collar
+ * and the hang tag) as a tile; mirrored repeats hide the tile's edges.
+ */
+function makePatternTexture(img: HTMLImageElement, renderer: THREE.WebGLRenderer) {
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const ctx = c.getContext('2d')!;
+  const side = Math.min(iw * 0.42, ih * 0.42);
+  ctx.drawImage(img, iw * 0.5 - side / 2, ih * 0.44, side, side, 0, 0, 512, 512);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.MirroredRepeatWrapping;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+/**
+ * Projects the material's map onto the mesh from three sides by its own position
+ * (triplanar), so a fabric pattern covers the whole tee, sleeves included, at a true
+ * scale and independent of the mannequin's UV layout.
+ */
+function wrapPattern(material: THREE.MeshStandardMaterial) {
+  material.customProgramCacheKey = () => 'triplanar-pattern';
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uTileScale = {value: 1 / PATTERN_TILE_M};
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTriPos;\nvarying vec3 vTriNormal;')
+      .replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\nvTriPos = position;\nvTriNormal = normal;',
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        '#include <common>\nvarying vec3 vTriPos;\nvarying vec3 vTriNormal;\nuniform float uTileScale;',
+      )
+      .replace(
+        '#include <map_fragment>',
+        `vec3 triW = pow(abs(normalize(vTriNormal)), vec3(4.0));
+        triW /= (triW.x + triW.y + triW.z);
+        vec3 tp = vTriPos * uTileScale;
+        vec4 triColor = texture2D(map, vec2(tp.z, -tp.y)) * triW.x
+          + texture2D(map, tp.xz) * triW.y
+          + texture2D(map, vec2(tp.x, -tp.y)) * triW.z;
+        diffuseColor *= triColor;`,
+      );
+  };
 }
 
 /** Reads the garment colour at a few points of a product photo, ignoring the backdrop. */
