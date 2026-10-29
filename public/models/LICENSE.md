@@ -11,3 +11,5 @@ is required. See https://static.makehumancommunity.org/assets/assetpacks.html
 - Trousers: `toigo_harem_pants` (Margaret Toigo), CC0
 
 Rebuild them with `tools/mannequin/build_all.ps1`.
+
+- Hair: `ponytail01` from the MakeHuman system assets, CC0

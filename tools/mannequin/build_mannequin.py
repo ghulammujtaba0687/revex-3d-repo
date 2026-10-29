@@ -22,6 +22,7 @@ ap.add_argument("--pants", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--preview", default="")
 ap.add_argument("--pose", default="relaxed")
+ap.add_argument("--hair", default="", help="optional hair .mhclo")
 ap.add_argument("--debug-stage", default="", help="render a preview at 'rest' or 'posed' and stop")
 args = ap.parse_args(argv)
 
@@ -65,6 +66,8 @@ basemesh = HumanService.create_human(mask_helpers=True, detailed_helpers=True,
 rig = HumanService.add_builtin_rig(basemesh, "default", import_weights=True)
 shirt = HumanService.add_mhclo_asset(args.shirt, basemesh, asset_type="Clothes", subdiv_levels=0)
 pants = HumanService.add_mhclo_asset(args.pants, basemesh, asset_type="Clothes", subdiv_levels=0)
+hair = (HumanService.add_mhclo_asset(args.hair, basemesh, asset_type="Hair", subdiv_levels=0)
+        if args.hair else None)
 
 if args.debug_stage == "rest":
     debug_render(args.out.replace(".glb", "-rest.png"))
@@ -115,8 +118,9 @@ if args.pose == "relaxed":
         aim_bone(f"upperarm01.{side}", down(s, 9, 4))
         aim_bone(f"lowerarm01.{side}", down(s, 5, 14))
 elif args.pose == "hand_on_hip":
-    aim_bone("upperarm01.L", down(1, 42, -8))
-    aim_bone("lowerarm01.L", (-0.75, 0.15, -0.35))
+    # elbow out to the side, hand resting on the front of the hip (MakeHuman faces -Y)
+    aim_bone("upperarm01.L", down(1, 38, 10))
+    aim_bone("lowerarm01.L", (-0.6, -0.32, -0.73))
     aim_bone("upperarm01.R", down(-1, 9, 4))
     aim_bone("lowerarm01.R", down(-1, 5, 14))
     rot_bone("spine01", (0, 1, 0), -3)
@@ -153,7 +157,8 @@ def apply_all_modifiers(obj):
             obj.modifiers.remove(mod)
 
 
-for obj in (basemesh, shirt, pants):
+parts = [o for o in (basemesh, shirt, pants, hair) if o]
+for obj in parts:
     obj.parent = None
     apply_all_modifiers(obj)
 
@@ -173,7 +178,7 @@ loosen(shirt, 0.014, 0.6, 4)
 loosen(pants, 0.008, 0.8, 10)
 
 # drop the rig and anything else MPFB added
-keep = {basemesh, shirt, pants}
+keep = set(parts)
 for obj in list(bpy.data.objects):
     if obj not in keep:
         bpy.data.objects.remove(obj, do_unlink=True)
@@ -195,6 +200,8 @@ if groups:
 basemesh.name = basemesh.data.name = "Body"
 shirt.name = shirt.data.name = "Shirt"
 pants.name = pants.data.name = "Pants"
+if hair:
+    hair.name = hair.data.name = "Hair"
 
 # simple named materials; the web app replaces them at runtime
 
@@ -208,11 +215,38 @@ def flat_material(name, rgba, rough):
     return mat
 
 
-for obj, mat in (
+def hair_material(mhclo_path):
+    """Hair cards: the strand texture's alpha cuts out the strands (glTF alphaMode MASK)."""
+    import glob
+    import os
+    folder = os.path.dirname(mhclo_path)
+    png = (glob.glob(os.path.join(folder, "*diffuse*.png")) or glob.glob(os.path.join(folder, "*.png")))[0]
+    mat = bpy.data.materials.new("Hair")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = nt.nodes["Principled BSDF"]
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = bpy.data.images.load(png)
+    # 512px is plenty for a figure seen from a few metres, and keeps the GLB small
+    if tex.image.size[0] > 512:
+        tex.image.scale(512, 512)
+        tex.image.pack()
+    nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+    nt.links.new(tex.outputs["Alpha"], bsdf.inputs["Alpha"])
+    bsdf.inputs["Roughness"].default_value = 0.6
+    mat.blend_method = "CLIP"
+    mat.alpha_threshold = 0.5
+    return mat
+
+
+materials = [
     (basemesh, flat_material("Marble", (0.93, 0.92, 0.9, 1), 0.35)),
     (shirt, flat_material("Shirt", (0.85, 0.85, 0.85, 1), 0.8)),
     (pants, flat_material("Pants", (0.08, 0.08, 0.09, 1), 0.8)),
-):
+]
+if hair:
+    materials.append((hair, hair_material(args.hair)))
+for obj, mat in materials:
     obj.data.materials.clear()
     obj.data.materials.append(mat)
     obj.vertex_groups.clear()
@@ -268,7 +302,7 @@ if args.preview:
     scene = bpy.context.scene
     scene.render.engine = "BLENDER_WORKBENCH"
     scene.display.shading.light = "STUDIO"
-    scene.display.shading.color_type = "MATERIAL"
+    scene.display.shading.color_type = "TEXTURE"
     scene.display.shading.show_shadows = True
     scene.render.resolution_x, scene.render.resolution_y = 900, 900
     scene.render.film_transparent = False

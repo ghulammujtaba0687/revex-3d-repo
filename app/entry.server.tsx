@@ -32,7 +32,8 @@ export default async function handleRequest(
     // Josefin Sans from Google Fonts, and 3D models fetched from the Shopify CDN
     styleSrc: ['https://fonts.googleapis.com'],
     fontSrc: ['https://fonts.gstatic.com'],
-    connectSrc: ['https://cdn.shopify.com'],
+    // blob: is how GLTFLoader reads textures embedded in a GLB (the mannequin's hair)
+    connectSrc: ['https://cdn.shopify.com', 'blob:'],
   });
 
   const body = await renderToReadableStream(

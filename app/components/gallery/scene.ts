@@ -363,7 +363,14 @@ export class GalleryScene {
       mesh.receiveShadow = true;
       if (mesh.name.startsWith('Shirt')) mesh.material = shirt;
       else if (mesh.name.startsWith('Pants')) mesh.material = pants;
-      else mesh.material = this.marble;
+      else if (mesh.name.startsWith('Hair')) {
+        // keep the strand texture; its alpha cuts out the individual strands
+        const hair = mesh.material as THREE.MeshStandardMaterial;
+        hair.alphaTest = 0.5;
+        hair.transparent = false;
+        hair.side = THREE.DoubleSide;
+        mesh.receiveShadow = false;
+      } else mesh.material = this.marble;
     });
     const group = new THREE.Group();
     group.position.y = 0.55; // pedestal top
@@ -1010,8 +1017,10 @@ export class GalleryScene {
 
       const {front, back} = pickFlatLays(product);
       const loadPhotos = Promise.all([loadImage(front), loadImage(back)]).then(([f, b]) => {
-        figure.front = f;
-        figure.back = b;
+        // show the side carrying the main artwork on the chest, where visitors look first
+        const swap = f && b && designScore(b) > designScore(f) * 1.2;
+        figure.front = swap ? b : f;
+        figure.back = swap ? f : b;
         if (f && isTrousers) figure.pantsColor = sampleGarmentColor(f, TROUSER_SAMPLES);
         else if (f) figure.shirtColor = sampleShirtColor(f);
       });
@@ -1535,6 +1544,32 @@ function pickFlatLays(product: GalleryProduct) {
     images[0];
   const back = images.find((i) => /back/.test(label(i)) && i !== front);
   return {front: front?.url ?? null, back: back?.url ?? null};
+}
+
+/**
+ * How much artwork a flat-lay photo carries: the average colour distance of the
+ * garment's centre from its plain-fabric colour. A blank side scores near zero.
+ */
+function designScore(img: HTMLImageElement) {
+  const n = 40;
+  const c = document.createElement('canvas');
+  c.width = c.height = n;
+  const ctx = c.getContext('2d', {willReadFrequently: true});
+  if (!ctx) return 0;
+  try {
+    ctx.drawImage(img, 0, 0, n, n);
+    const base = sampleGarmentColor(img, SHIRT_SAMPLES);
+    const srgb = {r: 0, g: 0, b: 0};
+    base.getRGB(srgb, THREE.SRGBColorSpace);
+    const d = ctx.getImageData(Math.round(n * 0.3), Math.round(n * 0.2), Math.round(n * 0.4), Math.round(n * 0.45)).data;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      sum += Math.abs(d[i] - srgb.r * 255) + Math.abs(d[i + 1] - srgb.g * 255) + Math.abs(d[i + 2] - srgb.b * 255);
+    }
+    return sum / (d.length / 4);
+  } catch {
+    return 0;
+  }
 }
 
 function sampleShirtColor(img: HTMLImageElement) {
