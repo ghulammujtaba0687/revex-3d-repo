@@ -9,6 +9,7 @@ The exported meshes are named Body, Shirt and Pants so the web app can find them
 """
 import argparse
 import math
+import os
 import sys
 
 import bpy
@@ -156,6 +157,13 @@ def apply_all_modifiers(obj):
             print("could not apply", obj.name, mod.name, err)
             obj.modifiers.remove(mod)
 
+
+# Keep the body under the tee: MPFB deletes skin covered by clothes, which leaves the
+# sleeves hollow, so the arm looks cut off where it enters the sleeve.
+shirt_key = os.path.splitext(os.path.basename(args.shirt))[0]
+for mod in list(basemesh.modifiers):
+    if "Delete" in mod.name and shirt_key in mod.name:
+        basemesh.modifiers.remove(mod)
 
 parts = [o for o in (basemesh, shirt, pants, hair) if o]
 for obj in parts:
