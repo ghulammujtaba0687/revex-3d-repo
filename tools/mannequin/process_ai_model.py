@@ -14,7 +14,7 @@ from mathutils import Matrix, Vector
 
 src, out, preview = sys.argv[sys.argv.index("--") + 1:][:3]
 HEIGHT = 1.85
-TARGET = {"Body": 36000, "Shirt": 9000, "Pants": 9000}
+TARGET = {"Body": 70000, "Shirt": 22000, "Pants": 16000}
 TEX_SIZE = 2048
 
 bpy.ops.object.select_all(action="SELECT")
@@ -100,6 +100,69 @@ for o in parts.values():
     bm.to_mesh(o.data)
     bm.free()
 
+def reclaim_trim(body, cloth, dist=0.005):
+    """Moves "skin" faces lying on the cloth's surface (a white collar or sleeve trim the
+    generator labelled as skin) into the cloth, so they take the garment colour."""
+    from mathutils.bvhtree import BVHTree
+    from mathutils.kdtree import KDTree
+
+    cbm = bmesh.new()
+    cbm.from_mesh(cloth.data)
+    cbm.normal_update()
+    tree = BVHTree.FromBMesh(cbm)
+    rim = [v.co.copy() for v in cbm.verts if v.is_boundary]
+    cbm.free()
+    kd = KDTree(len(rim))
+    for i, co in enumerate(rim):
+        kd.insert(co, i)
+    kd.balance()
+    bm = bmesh.new()
+    bm.from_mesh(body.data)
+    bm.normal_update()
+    picked = 0
+    for f in bm.faces:
+        c = f.calc_center_median()
+        f.select = False
+        # trim sits at the garment's open edges, flush with it and facing the same way;
+        # an arm or hand merely resting against the cloth doesn't qualify
+        if kd.find(c)[2] > 0.025:
+            continue
+        hit = tree.find_nearest(c, dist)
+        if hit[0] is None or f.normal.dot(hit[1]) < 0.6:
+            continue
+        f.select = True
+        picked += 1
+    bm.to_mesh(body.data)
+    bm.free()
+    if not picked:
+        return
+    bpy.ops.object.select_all(action="DESELECT")
+    body.select_set(True)
+    bpy.context.view_layer.objects.active = body
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.separate(type="SELECTED")
+    bpy.ops.object.mode_set(mode="OBJECT")
+    trim = next(o for o in bpy.context.selected_objects if o is not body)
+    trim.data.materials.clear()
+    bpy.ops.object.select_all(action="DESELECT")
+    trim.select_set(True)
+    cloth.select_set(True)
+    bpy.context.view_layer.objects.active = cloth
+    bpy.ops.object.join()
+    print(f"[trim] {picked} faces moved from skin to {cloth.name}")
+
+
+# Disabled: on this model the trim test also caught arm and neck skin resting against
+# the cloth, and the extra faces threw off the chest measurement for the print.
+# reclaim_trim(parts["Body"], parts["Shirt"])
+# reclaim_trim(parts["Body"], parts["Pants"])
+for o in parts.values():
+    bm = bmesh.new()
+    bm.from_mesh(o.data)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0005)
+    bm.to_mesh(o.data)
+    bm.free()
+
 # ---------- decimate ----------
 for name, o in parts.items():
     tris = sum(len(p.vertices) - 2 for p in o.data.polygons)
@@ -113,12 +176,74 @@ for name, o in parts.items():
     bpy.ops.object.modifier_apply(modifier=dec.name)
     after = sum(len(p.vertices) - 2 for p in o.data.polygons)
     print(f"[decimate] {name}: {tris} -> {after}")
+
+    bm = bmesh.new()
+    bm.from_mesh(o.data)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    if name in ("Shirt", "Pants"):
+        # even out the lumpy, dented surface decimation leaves on the cloth, keeping the
+        # big folds; the open hems are smoothed along their own line so they run straight
+        inner = [v for v in bm.verts if not v.is_boundary]
+        rim = [v for v in bm.verts if v.is_boundary]
+        for _ in range(4):
+            bmesh.ops.smooth_vert(bm, verts=inner, factor=0.5, use_axis_x=True, use_axis_y=True, use_axis_z=True)
+        for _ in range(6):
+            bmesh.ops.smooth_vert(bm, verts=rim, factor=0.5, use_axis_x=True, use_axis_y=True, use_axis_z=True)
+    bm.to_mesh(o.data)
+    bm.free()
+    o.data.update()
     bpy.ops.object.shade_smooth()
     if name in ("Shirt", "Pants"):
-        # decimation lets the skin poke through at hems; lift the cloth off it a little
         disp = o.modifiers.new("lift", "DISPLACE")
-        disp.mid_level, disp.strength = 0.0, 0.012 if name == "Shirt" else 0.006
+        disp.mid_level, disp.strength = 0.0, 0.006
         bpy.ops.object.modifier_apply(modifier=disp.name)
+
+
+def tuck_skin_under(body, cloth, reach=0.02, depth=0.008):
+    """Pushes skin that pokes through (or sits just outside) the cloth back underneath it.
+
+    Only skin facing the same way as the cloth counts as "under" it: an arm hanging
+    beside the shirt faces the shirt, and must not be pulled onto it.
+    """
+    from mathutils.bvhtree import BVHTree
+    from mathutils.kdtree import KDTree
+
+    bm = bmesh.new()
+    bm.from_mesh(cloth.data)
+    bm.normal_update()
+    tree = BVHTree.FromBMesh(bm)
+    rim = [v.co.copy() for v in bm.verts if v.is_boundary]
+    kd = KDTree(len(rim))
+    for i, co in enumerate(rim):
+        kd.insert(co, i)
+    kd.balance()
+    hem_zone = 0.03
+    moved = 0
+    for v in body.data.vertices:
+        # Near an open hem the nearest cloth point is the edge itself, which says
+        # nothing about inside/outside; instead sink the skin a little along its own
+        # normal so it sits back under the hem (fading out away from it).
+        _, _, d_rim = kd.find(v.co)
+        if d_rim < hem_zone:
+            v.co -= v.normal * 0.007 * (1 - d_rim / hem_zone)
+            moved += 1
+            continue
+        hit = tree.find_nearest(v.co, reach)
+        if hit[0] is None:
+            continue
+        loc, normal = hit[0], hit[1]
+        if v.normal.dot(normal) < 0.5:
+            continue
+        if (v.co - loc).dot(normal) > -depth:
+            v.co = loc - normal * depth
+            moved += 1
+    bm.free()
+    body.data.update()
+    print(f"[tuck] {cloth.name}: {moved} skin vertices moved under the cloth")
+
+
+tuck_skin_under(parts["Body"], parts["Shirt"])
+tuck_skin_under(parts["Body"], parts["Pants"])
 
 # ---------- textures: keep normal + ORM only, shrink ----------
 for o in parts.values():
