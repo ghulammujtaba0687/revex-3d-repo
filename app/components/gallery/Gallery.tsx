@@ -71,8 +71,10 @@ export function Gallery({products}: {products: GalleryProduct[]}) {
         if (import.meta.env.DEV) (window as any).__gallery = sceneRef.current;
       })
       .catch((error) => {
+        // never leave the visitor stuck on the loader: show the intro with a way to the shop
         console.error(error);
         setWebglError(true);
+        setPhase('intro');
       });
 
     return () => {
@@ -160,9 +162,11 @@ export function Gallery({products}: {products: GalleryProduct[]}) {
             </li>
           </ul>
           <GenderSwitch value={gender} onChange={setGender} large />
-          <button className="gal-enter" onClick={enter}>
-            Enter the gallery
-          </button>
+          {!webglError && (
+            <button className="gal-enter" onClick={enter}>
+              Enter the gallery
+            </button>
+          )}
           <Link className="gal-skip" to="/collections/all">
             or browse the shop
           </Link>
