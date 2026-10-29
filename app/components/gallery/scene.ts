@@ -394,11 +394,14 @@ export class GalleryScene {
     f.root.add(group);
   }
 
-  private hairMats: [THREE.MeshStandardMaterial, THREE.MeshStandardMaterial] | null = null;
+  /** per hairstyle (keyed by its strand texture) */
+  private hairMats = new Map<string, [THREE.MeshStandardMaterial, THREE.MeshStandardMaterial]>();
 
-  /** Shared hair materials: crisp strands on top of a solid, darker mass. */
+  /** Hair materials shared by every figure with this hairstyle: crisp strands on top of a solid, darker mass. */
   private hairMaterials(source: THREE.MeshStandardMaterial) {
-    if (!this.hairMats) {
+    const key = source.map?.uuid ?? source.uuid;
+    let mats = this.hairMats.get(key);
+    if (!mats) {
       const strands = new THREE.MeshStandardMaterial({
         map: source.map,
         color: 0xb08a6a,
@@ -419,9 +422,10 @@ export class GalleryScene {
         polygonOffsetFactor: 2,
         polygonOffsetUnits: 2,
       });
-      this.hairMats = [strands, mass];
+      mats = [strands, mass];
+      this.hairMats.set(key, mats);
     }
-    return this.hairMats;
+    return mats;
   }
 
   setMove(x: number, y: number) {

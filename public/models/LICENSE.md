@@ -13,3 +13,4 @@ is required. See https://static.makehumancommunity.org/assets/assetpacks.html
 Rebuild them with `tools/mannequin/build_all.ps1`.
 
 - Hair: `ponytail01` from the MakeHuman system assets, CC0
+- Hair (men): `short02` from the MakeHuman system assets, CC0

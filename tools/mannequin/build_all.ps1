@@ -9,7 +9,8 @@ $GT = "$T\gltf\node_modules\.bin\gltf-transform.cmd"
 $Out = "E:\revex-3d-folder\revex-3d-repo\public\models"
 
 $fits = @(
-  @{ gender = "male"; shirt = "$C\elvs_crude_t-shirt_male\elvs_crude_t-shirt_male.mhclo"; hair = "" },
+  @{ gender = "male"; shirt = "$C\elvs_crude_t-shirt_male\elvs_crude_t-shirt_male.mhclo";
+     hair = "$T\assets\mh\hair\short02\short02.mhclo" },
   @{ gender = "female"; shirt = "$C\joepal_crude_t-shirt_female\joepal_crude_t-shirt_female.mhclo";
      hair = "$T\assets\mh\hair\ponytail01\ponytail01.mhclo" }
 )
