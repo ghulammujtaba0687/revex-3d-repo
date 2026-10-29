@@ -8,11 +8,15 @@ import {UnrealBloomPass} from 'three/examples/jsm/postprocessing/UnrealBloomPass
 import {OutputPass} from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type {Gender, GalleryProduct} from './types';
 
-/** Display mannequins built with MPFB2 (CC0); meshes are named Body, Shirt and Pants. */
+/**
+ * Display mannequins; meshes are named Body, Shirt and Pants. The women's are built with
+ * MPFB2 (CC0) in three poses. The men's is a sculpted AI-generated figure (testing only:
+ * its source terms don't allow commercial use) in a single pose.
+ */
 const POSES = ['relaxed', 'hand_on_hip', 'pocket'] as const;
 type Pose = (typeof POSES)[number];
 const mannequinUrl = (gender: Gender, pose: Pose) =>
-  `/models/mannequin-${gender === 'women' ? 'female' : 'male'}-${pose}.glb`;
+  gender === 'men' ? '/models/mannequin-male-ai.glb' : `/models/mannequin-female-${pose}.glb`;
 
 /**
  * How a mannequin's tee maps onto its texture, measured from the mesh itself: for the
@@ -302,28 +306,50 @@ export class GalleryScene {
 
   /** Loads every pose of one fit's mannequin once; onEach fires as each file settles. */
   private loadTemplates(gender: Gender, onEach?: () => void) {
+    // poses that share a file are fetched once
+    const byUrl = new Map<string, Pose[]>();
+    for (const pose of POSES) {
+      const url = mannequinUrl(gender, pose);
+      byUrl.set(url, [...(byUrl.get(url) ?? []), pose]);
+    }
     this.templateLoads[gender] ??= Promise.all(
-      POSES.map(
-        (pose) =>
+      [...byUrl].map(
+        ([url, poses]) =>
           new Promise<void>((resolve) => {
+            const done = () => {
+              poses.forEach(() => onEach?.());
+              resolve();
+            };
             this.gltfLoader.load(
-              mannequinUrl(gender, pose),
+              url,
               (gltf) => {
-                this.templates[gender][pose] = gltf.scene;
+                for (const pose of poses) this.templates[gender][pose] = gltf.scene;
                 this.shirtFits[gender] ??= measureShirt(gltf.scene) ?? undefined;
-                onEach?.();
-                resolve();
+                done();
               },
               undefined,
-              () => {
-                onEach?.();
-                resolve();
-              },
+              done,
             );
           }),
       ),
     ).then(() => undefined);
     return this.templateLoads[gender];
+  }
+
+  private marbleByNormal = new Map<string, THREE.MeshStandardMaterial>();
+
+  /** The shared marble, plus the sculpt's own surface detail when the model carries it. */
+  private marbleFor(source: THREE.Material) {
+    const src = source as THREE.MeshStandardMaterial;
+    if (!src.normalMap) return this.marble;
+    let m = this.marbleByNormal.get(src.normalMap.uuid);
+    if (!m) {
+      m = this.marble.clone();
+      m.normalMap = src.normalMap;
+      m.aoMap = src.aoMap;
+      this.marbleByNormal.set(src.normalMap.uuid, m);
+    }
+    return m;
   }
 
   /** (Re)builds a figure's body for the current gender, dressed in its product. */
@@ -377,11 +403,17 @@ export class GalleryScene {
       if (!mesh.isMesh) return;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
-      if (mesh.name.startsWith('Shirt')) mesh.material = shirt;
-      else if (mesh.name.startsWith('Pants')) mesh.material = pants;
-      else if (mesh.name.startsWith('HairSculpt')) mesh.material = this.sculptedHair;
+      const src = mesh.material as THREE.MeshStandardMaterial;
+      if (mesh.name.startsWith('Shirt') || mesh.name.startsWith('Pants')) {
+        const garment = mesh.name.startsWith('Shirt') ? shirt : pants;
+        // Trousers keep the fabric's folds from the model's own normal map. The tee and
+        // the AO maps are left plain: after decimation their UV-island seams show as dark
+        // lines across the print.
+        if (garment === pants && src.normalMap) garment.normalMap = src.normalMap;
+        mesh.material = garment;
+      } else if (mesh.name.startsWith('HairSculpt')) mesh.material = this.sculptedHair;
       else if (mesh.name.startsWith('Hair')) hairMeshes.push(mesh);
-      else mesh.material = this.marble;
+      else mesh.material = this.marbleFor(src);
     });
     for (const mesh of hairMeshes) {
       const [strands, mass] = this.hairMaterials(mesh.material as THREE.MeshStandardMaterial);
@@ -1805,6 +1837,18 @@ function measureShirt(scene: THREE.Object3D): ShirtFit | null {
     pts.push({x: p.x, y: p.y, nz: n.z, u: uv.getX(i), v: uv.getY(i)});
     if (Math.abs(p.x) < 0.2) top = Math.max(top, p.y);
   }
+  // Chest half-width, measured just below where the sleeves end, where the shirt is
+  // only the torso (higher up the sleeves hang beside it and would count as chest).
+  const neck = (sign: number) =>
+    Math.max(...pts.filter((q) => Math.abs(q.x) < 0.03 && q.nz * sign > 0.3).map((q) => q.y));
+  const neckFront = neck(1);
+  const maxX = Math.max(...pts.map((q) => Math.abs(q.x)));
+  const sleeveBottom = Math.min(
+    ...pts.filter((q) => Math.abs(q.x) > maxX * 0.8).map((q) => q.y),
+  );
+  const band = pts.filter((q) => Math.abs(q.y - (sleeveBottom - 0.04)) < 0.02);
+  const half = band.length ? Math.max(...band.map((q) => Math.abs(q.x))) : 0.17;
+
   const front: number[][][] = [];
   const back: number[][][] = [];
   const index = geo.index;
@@ -1812,22 +1856,18 @@ function measureShirt(scene: THREE.Object3D): ShirtFit | null {
   for (let k = 0; k < count; k += 3) {
     const ids = [0, 1, 2].map((o) => (index ? index.getX(k + o) : k + o));
     const corners = ids.map((id) => pts[id]);
-    if (corners.some((q) => Math.abs(q.x) > 0.24 || q.y < top - 0.75)) continue;
+    // torso only: the sleeves keep the plain garment colour
+    if (corners.some((q) => Math.abs(q.x) > half * 1.25 || q.y < top - 0.75)) continue;
     const nz = (corners[0].nz + corners[1].nz + corners[2].nz) / 3;
     const tri = corners.map((q) => [q.x, q.y, q.u, q.v]);
     if (nz > 0.2) front.push(tri);
     else if (nz < -0.2) back.push(tri);
   }
   if (front.length < 12 || back.length < 12) return null;
-  // chest width seen from the front, opened out a little to approximate the fabric's
-  // width around the curve, which is what a flat-lay photo shows
-  // (below the sleeves, front-facing only, so the arms don't count)
-  const band = pts.filter((q) => Math.abs(q.y - (top - 0.3)) < 0.03 && q.nz > 0.35);
-  const xs = band.map((q) => q.x);
-  const torsoWidth = (xs.length ? Math.max(...xs) - Math.min(...xs) : 0.34) * 1.12;
-  const neck = (sign: number) =>
-    Math.max(...pts.filter((q) => Math.abs(q.x) < 0.03 && q.nz * sign > 0.3).map((q) => q.y));
-  return {front, back, neckY: {front: neck(1), back: neck(-1)}, torsoWidth};
+  // opened out a little to approximate the fabric's width around the chest's curve,
+  // which is what a flat-lay photo shows
+  const torsoWidth = 2 * half * 1.12;
+  return {front, back, neckY: {front: neckFront, back: neck(-1)}, torsoWidth};
 }
 
 /**

@@ -14,3 +14,7 @@ Rebuild them with `tools/mannequin/build_all.ps1`.
 
 - Hair: `ponytail01` from the MakeHuman system assets, CC0
 - Hair (men): `short02` from the MakeHuman system assets, CC0
+
+- `mannequin-male-ai.glb`: AI-generated (Kimi). **Testing only** - Kimi's terms do not allow
+  commercial use without written permission. Replace before going live.
+  Processed with `tools/mannequin/process_ai_model.py`.
