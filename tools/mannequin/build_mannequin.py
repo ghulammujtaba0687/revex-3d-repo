@@ -160,9 +160,10 @@ def apply_all_modifiers(obj):
 
 # Keep the body under the tee: MPFB deletes skin covered by clothes, which leaves the
 # sleeves hollow, so the arm looks cut off where it enters the sleeve.
-shirt_key = os.path.splitext(os.path.basename(args.shirt))[0]
+# The same goes for the trousers: their cut-out leaves a ragged body edge at the waist
+# whose shards poke through the hem, so keep the whole body.
 for mod in list(basemesh.modifiers):
-    if "Delete" in mod.name and shirt_key in mod.name:
+    if mod.name.startswith("Human Delete"):
         basemesh.modifiers.remove(mod)
 
 parts = [o for o in (basemesh, shirt, pants, hair) if o]
@@ -184,6 +185,54 @@ def loosen(obj, offset, smooth_factor, repeat):
 # drop-shoulder tees sit loose; baggy trousers shouldn't cling at the crotch
 loosen(shirt, 0.014, 0.6, 4)
 loosen(pants, 0.008, 0.8, 10)
+
+
+def tuck_waistband(pants, shirt):
+    """Pulls the trouser top in under the tee so the waistband can't poke through the hem."""
+    world = shirt.matrix_world
+    hem = min((world @ v.co).z for v in shirt.data.vertices)
+    pw = pants.matrix_world
+    inv = pw.inverted()
+    # torso axis at the waist, from the tee's own vertices around the hem
+    ring = [world @ v.co for v in shirt.data.vertices if (world @ v.co).z < hem + 0.08]
+    cx = sum(p.x for p in ring) / len(ring)
+    cy = sum(p.y for p in ring) / len(ring)
+    for v in pants.data.vertices:
+        p = pw @ v.co
+        if p.z > hem - 0.05:
+            # draw the waistband in towards the torso axis (folds and all), fading in
+            # over 5 cm below the hem so there's no visible step
+            k = min(1.0, (p.z - (hem - 0.05)) / 0.05)
+            f = 1.0 - 0.16 * k
+            p.x = cx + (p.x - cx) * f
+            p.y = cy + (p.y - cy) * f
+            v.co = inv @ p
+    pants.data.update()
+    return hem
+
+
+hem_z = tuck_waistband(pants, shirt)
+
+
+def sculpt_hair(obj):
+    """Turns hair cards into one solid, smooth shell, like a mannequin's sculpted hair."""
+    bpy.context.view_layer.objects.active = obj
+    solid = obj.modifiers.new("solid", "SOLIDIFY")
+    solid.thickness, solid.offset = 0.012, 0
+    remesh = obj.modifiers.new("remesh", "REMESH")
+    remesh.mode, remesh.voxel_size, remesh.adaptivity = "VOXEL", 0.006, 0.0
+    smooth = obj.modifiers.new("smooth", "SMOOTH")
+    smooth.factor, smooth.iterations = 0.9, 12
+    dec = obj.modifiers.new("dec", "DECIMATE")
+    dec.ratio = 0.25
+    apply_all_modifiers(obj)
+    # a remesh has no UVs; the web app gives sculpted hair a plain material
+    while obj.data.uv_layers:
+        obj.data.uv_layers.remove(obj.data.uv_layers[0])
+
+
+if hair:
+    sculpt_hair(hair)
 
 # drop the rig and anything else MPFB added
 keep = set(parts)
@@ -209,7 +258,7 @@ basemesh.name = basemesh.data.name = "Body"
 shirt.name = shirt.data.name = "Shirt"
 pants.name = pants.data.name = "Pants"
 if hair:
-    hair.name = hair.data.name = "Hair"
+    hair.name = hair.data.name = "HairSculpt"
 
 # simple named materials; the web app replaces them at runtime
 
@@ -253,7 +302,7 @@ materials = [
     (pants, flat_material("Pants", (0.08, 0.08, 0.09, 1), 0.8)),
 ]
 if hair:
-    materials.append((hair, hair_material(args.hair)))
+    materials.append((hair, flat_material("HairSculpt", (0.09, 0.06, 0.045, 1), 0.45)))
 for obj, mat in materials:
     obj.data.materials.clear()
     obj.data.materials.append(mat)

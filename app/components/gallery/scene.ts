@@ -106,6 +106,8 @@ export class GalleryScene {
   private shirtFits: Partial<Record<Gender, ShirtFit>> = {};
   private gltfLoader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
   private marble = new THREE.MeshStandardMaterial({color: 0xf1eee8, roughness: 0.3});
+  /** solid sculpted hair, like a boutique mannequin's: deep espresso with a soft sheen */
+  private sculptedHair = new THREE.MeshStandardMaterial({color: 0x2a1b12, roughness: 0.42});
   private obstacles: Obstacle[] = [];
   private sculpture = new THREE.Group();
   private raycaster = new THREE.Raycaster();
@@ -371,6 +373,7 @@ export class GalleryScene {
       mesh.receiveShadow = true;
       if (mesh.name.startsWith('Shirt')) mesh.material = shirt;
       else if (mesh.name.startsWith('Pants')) mesh.material = pants;
+      else if (mesh.name.startsWith('HairSculpt')) mesh.material = this.sculptedHair;
       else if (mesh.name.startsWith('Hair')) hairMeshes.push(mesh);
       else mesh.material = this.marble;
     });
