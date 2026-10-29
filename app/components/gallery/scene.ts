@@ -15,14 +15,18 @@ const mannequinUrl = (gender: Gender, pose: Pose) =>
   `/models/mannequin-${gender === 'women' ? 'female' : 'male'}-${pose}.glb`;
 
 /**
- * Where the front and back panels of each mannequin's tee sit in its UV map, as
- * [x, y, width, height] fractions of the texture (origin top-left). The back panel
- * is laid out upside down.
+ * How a mannequin's tee maps onto its texture, measured from the mesh itself: for the
+ * front and back torso, a linear map from body-space (x, y in metres) to texture pixels,
+ * plus where the shoulder line is and how wide the torso is.
  */
-const SHIRT_PANELS: Record<Gender, {front: number[]; back: number[]}> = {
-  men: {front: [0, 0.49, 0.565, 0.51], back: [0, 0, 0.53, 0.49]},
-  women: {front: [0.008, 0.04, 0.612, 0.58], back: [0.418, 0.39, 0.568, 0.58]},
-};
+interface ShirtFit {
+  /** torso triangles facing front / back: per corner [x, y, u, v] (body metres, UV 0..1) */
+  front: number[][][];
+  back: number[][][];
+  /** height of the neckline at the centre of the front / back */
+  neckY: {front: number; back: number};
+  torsoWidth: number;
+}
 
 // ---------- layout (metres) ----------
 const R = 14; // rotunda radius
@@ -99,6 +103,7 @@ export class GalleryScene {
   private figures: Figure[] = [];
   private templates: Record<Gender, Partial<Record<Pose, THREE.Object3D>>> = {women: {}, men: {}};
   private templateLoads: Partial<Record<Gender, Promise<void>>> = {};
+  private shirtFits: Partial<Record<Gender, ShirtFit>> = {};
   private gltfLoader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
   private marble = new THREE.MeshStandardMaterial({color: 0xf1eee8, roughness: 0.3});
   private obstacles: Obstacle[] = [];
@@ -297,6 +302,7 @@ export class GalleryScene {
               mannequinUrl(gender, pose),
               (gltf) => {
                 this.templates[gender][pose] = gltf.scene;
+                this.shirtFits[gender] ??= measureShirt(gltf.scene) ?? undefined;
                 onEach?.();
                 resolve();
               },
@@ -333,9 +339,10 @@ export class GalleryScene {
     }
 
     let map: THREE.Texture | null = null;
-    if (!f.isTrousers && f.front) {
+    const fit = this.shirtFits[this.gender];
+    if (!f.isTrousers && f.front && fit) {
       map = f.shirtTextures[this.gender] ??= makeShirtTexture(
-        SHIRT_PANELS[this.gender],
+        fit,
         f.front,
         f.back ?? f.front,
         f.shirtColor,
@@ -404,7 +411,9 @@ export class GalleryScene {
         map: source.map,
         color: 0x5a3b26,
         roughness: 0.8,
-        alphaTest: 0.03,
+        // low enough to fill gaps between strands, high enough that the faint wisps at
+        // the hairline don't turn into a ragged dark edge on the forehead
+        alphaTest: 0.25,
         side: THREE.DoubleSide,
         polygonOffset: true,
         polygonOffsetFactor: 2,
@@ -1651,21 +1660,22 @@ function makePrintTexture(img: HTMLImageElement, renderer: THREE.WebGLRenderer) 
   return tex;
 }
 
-/** Where the garment sits inside a square flat-lay photo, as fractions [x, y, w, h]. */
-const GARMENT_IN_PHOTO = [0.04, 0.06, 0.92, 0.9];
 /**
  * The print area on the chest/back of a flat-lay, inside the garment's outline. Collar,
  * sleeves and side seams fall outside it, so their drawn outlines never reach the tee.
  */
 const ART_IN_PHOTO = [0.23, 0.13, 0.54, 0.65];
+/** In a flat-lay photo: the torso's edges below the sleeves, and the neckline at centre. */
+const PHOTO_TORSO = {left: 0.2, right: 0.8, neckY: 0.15};
 
 /**
  * Builds the tee texture: the whole shirt in the plain garment colour, with only the
- * artwork lifted out of each flat-lay photo and placed on the front/back UV panel at
- * the spot it occupies on the real garment.
+ * artwork lifted out of each flat-lay photo. The art keeps its true size and its
+ * distance below the shoulders, measured against the photo's torso, and is mapped
+ * through the mannequin's own UV layout so it never stretches or drifts into the collar.
  */
 function makeShirtTexture(
-  panels: {front: number[]; back: number[]},
+  fit: ShirtFit,
   front: HTMLImageElement,
   back: HTMLImageElement,
   base: THREE.Color,
@@ -1678,36 +1688,130 @@ function makeShirtTexture(
   ctx.fillStyle = `#${base.getHexString(THREE.SRGBColorSpace)}`;
   ctx.fillRect(0, 0, size, size);
 
-  const [gx, gy, gw, gh] = GARMENT_IN_PHOTO;
   const [ax, ay, aw, ah] = ART_IN_PHOTO;
-  const paint = (img: HTMLImageElement, [x, y, w, h]: number[], upsideDown: boolean) => {
+  // metres of body per unit of photo width
+  const s = fit.torsoWidth / (PHOTO_TORSO.right - PHOTO_TORSO.left);
+  const paint = (img: HTMLImageElement, tris: number[][][], mirror: number, neckY: number) => {
     const art = extractArt(img, base);
     if (!art) return;
-    // map the art box from photo space into the panel, keeping its place on the garment
-    const px = (x + ((ax - gx) / gw) * w) * size;
-    const py = (y + ((ay - gy) / gh) * h) * size;
-    const pw = (aw / gw) * w * size;
-    const ph = (ah / gh) * h * size;
-    ctx.save();
-    if (upsideDown) {
-      // back panels are laid out upside down in the UV map
-      const [bx, by] = [(x + w) * size, (y + h) * size];
-      ctx.translate(bx - (px - x * size), by - (py - y * size));
-      ctx.rotate(Math.PI);
-      ctx.drawImage(art, 0, 0, pw, ph);
-    } else {
-      ctx.drawImage(art, px, py, pw, ph);
+    // art pixel (i, j) -> body (x, y): x = x0 + xi*i, y = y0 + yj*j
+    const kx = mirror * s;
+    const xi = (kx * aw) / art.width;
+    const x0 = kx * (ax - 0.5);
+    const yj = (-s * ah) / art.height;
+    // keep the art's distance below the neckline, as on the garment
+    const y0 = neckY - s * (ay - PHOTO_TORSO.neckY);
+    const [bx0, bx1] = [Math.min(x0, x0 + xi * art.width), Math.max(x0, x0 + xi * art.width)];
+    const [by0, by1] = [y0 + yj * art.height, y0];
+
+    // Paint triangle by triangle: within each one, body -> UV is exactly affine, so the
+    // art follows the tee across UV seams without cuts or stretching.
+    for (const t of tris) {
+      const xs = t.map((c) => c[0]);
+      const ys = t.map((c) => c[1]);
+      if (Math.max(...xs) < bx0 || Math.min(...xs) > bx1) continue;
+      if (Math.max(...ys) < by0 || Math.min(...ys) > by1) continue;
+      const [[xa, ya, ua, va], [xb, yb, ub, vb], [xc, yc, uc, vc]] = t;
+      const dx1 = xb - xa, dy1 = yb - ya, dx2 = xc - xa, dy2 = yc - ya;
+      const det = dx1 * dy2 - dx2 * dy1;
+      if (Math.abs(det) < 1e-9) continue;
+      // body -> UV for this triangle
+      const m00 = ((ub - ua) * dy2 - (uc - ua) * dy1) / det;
+      const m01 = ((uc - ua) * dx1 - (ub - ua) * dx2) / det;
+      const m10 = ((vb - va) * dy2 - (vc - va) * dy1) / det;
+      const m11 = ((vc - va) * dx1 - (vb - va) * dx2) / det;
+      const tu = ua - m00 * xa - m01 * ya;
+      const tv = va - m10 * xa - m11 * ya;
+
+      // clip to the triangle in texture space, grown by a pixel to hide hairline gaps
+      const pts = t.map((c) => [c[2] * size, c[3] * size]);
+      const cx = (pts[0][0] + pts[1][0] + pts[2][0]) / 3;
+      const cy = (pts[0][1] + pts[1][1] + pts[2][1]) / 3;
+      ctx.save();
+      ctx.beginPath();
+      pts.forEach(([px, py], k) => {
+        const d = Math.hypot(px - cx, py - cy) || 1;
+        const gx = px + ((px - cx) / d) * 1.2;
+        const gy = py + ((py - cy) / d) * 1.2;
+        if (k) ctx.lineTo(gx, gy);
+        else ctx.moveTo(gx, gy);
+      });
+      ctx.closePath();
+      ctx.clip();
+      ctx.setTransform(
+        size * m00 * xi,
+        size * m10 * xi,
+        size * m01 * yj,
+        size * m11 * yj,
+        size * (m00 * x0 + m01 * y0 + tu),
+        size * (m10 * x0 + m11 * y0 + tv),
+      );
+      ctx.drawImage(art, 0, 0);
+      ctx.restore();
     }
-    ctx.restore();
   };
-  paint(front, panels.front, false);
-  paint(back, panels.back, true);
+  // the mannequin faces +z: seen from the front its right-hand side is +x, from behind -x
+  paint(front, fit.front, 1, fit.neckY.front);
+  paint(back, fit.back, -1, fit.neckY.back);
 
   const tex = new THREE.CanvasTexture(c);
   tex.flipY = false; // glTF UV convention
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
   return tex;
+}
+
+/**
+ * Measures a mannequin's tee: the shoulder line, the chest width, and its torso
+ * triangles facing front and back with their body positions and UVs.
+ */
+function measureShirt(scene: THREE.Object3D): ShirtFit | null {
+  let shirt: THREE.Mesh | null = null;
+  scene.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh && o.name.startsWith('Shirt')) shirt = o as THREE.Mesh;
+  });
+  if (!shirt) return null;
+  const mesh = shirt as THREE.Mesh;
+  scene.updateMatrixWorld(true);
+  const geo = mesh.geometry;
+  const pos = geo.attributes.position;
+  const nor = geo.attributes.normal;
+  const uv = geo.attributes.uv;
+  if (!pos || !nor || !uv) return null;
+  const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+  const p = new THREE.Vector3();
+  const n = new THREE.Vector3();
+  const pts: {x: number; y: number; nz: number; u: number; v: number}[] = [];
+  let top = -Infinity;
+  for (let i = 0; i < pos.count; i++) {
+    p.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+    n.fromBufferAttribute(nor, i).applyMatrix3(normalMatrix).normalize();
+    pts.push({x: p.x, y: p.y, nz: n.z, u: uv.getX(i), v: uv.getY(i)});
+    if (Math.abs(p.x) < 0.2) top = Math.max(top, p.y);
+  }
+  const front: number[][][] = [];
+  const back: number[][][] = [];
+  const index = geo.index;
+  const count = index ? index.count : pos.count;
+  for (let k = 0; k < count; k += 3) {
+    const ids = [0, 1, 2].map((o) => (index ? index.getX(k + o) : k + o));
+    const corners = ids.map((id) => pts[id]);
+    if (corners.some((q) => Math.abs(q.x) > 0.24 || q.y < top - 0.75)) continue;
+    const nz = (corners[0].nz + corners[1].nz + corners[2].nz) / 3;
+    const tri = corners.map((q) => [q.x, q.y, q.u, q.v]);
+    if (nz > 0.2) front.push(tri);
+    else if (nz < -0.2) back.push(tri);
+  }
+  if (front.length < 12 || back.length < 12) return null;
+  // chest width seen from the front, opened out a little to approximate the fabric's
+  // width around the curve, which is what a flat-lay photo shows
+  // (below the sleeves, front-facing only, so the arms don't count)
+  const band = pts.filter((q) => Math.abs(q.y - (top - 0.3)) < 0.03 && q.nz > 0.35);
+  const xs = band.map((q) => q.x);
+  const torsoWidth = (xs.length ? Math.max(...xs) - Math.min(...xs) : 0.34) * 1.12;
+  const neck = (sign: number) =>
+    Math.max(...pts.filter((q) => Math.abs(q.x) < 0.03 && q.nz * sign > 0.3).map((q) => q.y));
+  return {front, back, neckY: {front: neck(1), back: neck(-1)}, torsoWidth};
 }
 
 /**
