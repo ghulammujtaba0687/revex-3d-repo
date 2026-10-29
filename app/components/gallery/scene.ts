@@ -356,6 +356,7 @@ export class GalleryScene {
     f.ownMaterials = [shirt, pants];
 
     const body = template.clone(true);
+    const hairMeshes: THREE.Mesh[] = [];
     body.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
@@ -363,20 +364,55 @@ export class GalleryScene {
       mesh.receiveShadow = true;
       if (mesh.name.startsWith('Shirt')) mesh.material = shirt;
       else if (mesh.name.startsWith('Pants')) mesh.material = pants;
-      else if (mesh.name.startsWith('Hair')) {
-        // keep the strand texture; its alpha cuts out the individual strands
-        const hair = mesh.material as THREE.MeshStandardMaterial;
-        hair.alphaTest = 0.5;
-        hair.transparent = false;
-        hair.side = THREE.DoubleSide;
-        mesh.receiveShadow = false;
-      } else mesh.material = this.marble;
+      else if (mesh.name.startsWith('Hair')) hairMeshes.push(mesh);
+      else mesh.material = this.marble;
     });
+    for (const mesh of hairMeshes) {
+      const [strands, mass] = this.hairMaterials(mesh.material as THREE.MeshStandardMaterial);
+      mesh.material = strands;
+      mesh.receiveShadow = false;
+      // a dense underlayer on the same cards hides the scalp between the strands
+      const under = new THREE.Mesh(mesh.geometry, mass);
+      under.position.copy(mesh.position);
+      under.quaternion.copy(mesh.quaternion);
+      under.scale.copy(mesh.scale);
+      under.renderOrder = -1;
+      mesh.parent!.add(under);
+    }
+
     const group = new THREE.Group();
     group.position.y = 0.55; // pedestal top
     group.add(body);
     f.body = group;
     f.root.add(group);
+  }
+
+  private hairMats: [THREE.MeshStandardMaterial, THREE.MeshStandardMaterial] | null = null;
+
+  /** Shared hair materials: crisp strands on top of a solid, darker mass. */
+  private hairMaterials(source: THREE.MeshStandardMaterial) {
+    if (!this.hairMats) {
+      const strands = new THREE.MeshStandardMaterial({
+        map: source.map,
+        color: 0xb08a6a,
+        roughness: 0.55,
+        alphaTest: 0.35,
+        alphaToCoverage: true,
+        side: THREE.DoubleSide,
+      });
+      const mass = new THREE.MeshStandardMaterial({
+        map: source.map,
+        color: 0x5a3b26,
+        roughness: 0.8,
+        alphaTest: 0.03,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: 2,
+        polygonOffsetUnits: 2,
+      });
+      this.hairMats = [strands, mass];
+    }
+    return this.hairMats;
   }
 
   setMove(x: number, y: number) {
@@ -1615,10 +1651,18 @@ function makePrintTexture(img: HTMLImageElement, renderer: THREE.WebGLRenderer) 
   return tex;
 }
 
+/** Where the garment sits inside a square flat-lay photo, as fractions [x, y, w, h]. */
+const GARMENT_IN_PHOTO = [0.04, 0.06, 0.92, 0.9];
 /**
- * Paints flat-lay product photos onto the mannequin tee's front and back UV panels.
- * The studio backdrop around the garment is replaced with the garment colour so it
- * doesn't show as pale patches at the collar and armholes.
+ * The print area on the chest/back of a flat-lay, inside the garment's outline. Collar,
+ * sleeves and side seams fall outside it, so their drawn outlines never reach the tee.
+ */
+const ART_IN_PHOTO = [0.23, 0.13, 0.54, 0.65];
+
+/**
+ * Builds the tee texture: the whole shirt in the plain garment colour, with only the
+ * artwork lifted out of each flat-lay photo and placed on the front/back UV panel at
+ * the spot it occupies on the real garment.
  */
 function makeShirtTexture(
   panels: {front: number[]; back: number[]},
@@ -1631,32 +1675,28 @@ function makeShirtTexture(
   const c = document.createElement('canvas');
   c.width = c.height = size;
   const ctx = c.getContext('2d', {willReadFrequently: true})!;
-  const baseCss = `#${base.getHexString(THREE.SRGBColorSpace)}`;
-  ctx.fillStyle = baseCss;
+  ctx.fillStyle = `#${base.getHexString(THREE.SRGBColorSpace)}`;
   ctx.fillRect(0, 0, size, size);
 
+  const [gx, gy, gw, gh] = GARMENT_IN_PHOTO;
+  const [ax, ay, aw, ah] = ART_IN_PHOTO;
   const paint = (img: HTMLImageElement, [x, y, w, h]: number[], upsideDown: boolean) => {
-    const iw = img.naturalWidth || img.width;
-    const ih = img.naturalHeight || img.height;
-    const px = Math.round(x * size);
-    const py = Math.round(y * size);
-    const pw = Math.round(w * size);
-    const ph = Math.round(h * size);
-    // the garment silhouette inside a typical square flat-lay
-    const [sx, sy, sw, sh] = [iw * 0.04, ih * 0.06, iw * 0.92, ih * 0.9];
-    const tmp = document.createElement('canvas');
-    tmp.width = pw;
-    tmp.height = ph;
-    const t = tmp.getContext('2d', {willReadFrequently: true})!;
-    t.drawImage(img, sx, sy, sw, sh, 0, 0, pw, ph);
-    keyOutBackdrop(t, pw, ph, base);
+    const art = extractArt(img, base);
+    if (!art) return;
+    // map the art box from photo space into the panel, keeping its place on the garment
+    const px = (x + ((ax - gx) / gw) * w) * size;
+    const py = (y + ((ay - gy) / gh) * h) * size;
+    const pw = (aw / gw) * w * size;
+    const ph = (ah / gh) * h * size;
     ctx.save();
     if (upsideDown) {
-      ctx.translate(px + pw, py + ph);
+      // back panels are laid out upside down in the UV map
+      const [bx, by] = [(x + w) * size, (y + h) * size];
+      ctx.translate(bx - (px - x * size), by - (py - y * size));
       ctx.rotate(Math.PI);
-      ctx.drawImage(tmp, 0, 0);
+      ctx.drawImage(art, 0, 0, pw, ph);
     } else {
-      ctx.drawImage(tmp, px, py);
+      ctx.drawImage(art, px, py, pw, ph);
     }
     ctx.restore();
   };
@@ -1670,31 +1710,44 @@ function makeShirtTexture(
   return tex;
 }
 
-/** Replaces near-white, low-saturation backdrop pixels with the garment colour. */
-function keyOutBackdrop(ctx: CanvasRenderingContext2D, w: number, h: number, base: THREE.Color) {
+/**
+ * Cuts the print area out of a flat-lay and makes the plain fabric and studio backdrop
+ * transparent, leaving only the artwork. Returns null when there is no real artwork.
+ */
+function extractArt(img: HTMLImageElement, base: THREE.Color) {
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  const [ax, ay, aw, ah] = ART_IN_PHOTO;
+  const w = 512;
+  const h = Math.round((w * (ah * ih)) / (aw * iw));
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d', {willReadFrequently: true})!;
+  ctx.drawImage(img, ax * iw, ay * ih, aw * iw, ah * ih, 0, 0, w, h);
   const srgb = {r: 0, g: 0, b: 0};
   base.getRGB(srgb, THREE.SRGBColorSpace);
-  const [tr, tg, tb] = [srgb.r * 255, srgb.g * 255, srgb.b * 255];
-  // a white tee is its own backdrop colour; nothing to key
-  if (tr > 225 && tg > 225 && tb > 225) return;
+  const [br, bg, bb] = [srgb.r * 255, srgb.g * 255, srgb.b * 255];
   try {
     const data = ctx.getImageData(0, 0, w, h);
     const p = data.data;
+    let kept = 0;
     for (let i = 0; i < p.length; i += 4) {
       const r = p[i];
       const g = p[i + 1];
       const b = p[i + 2];
-      const max = Math.max(r, g, b);
-      const min = Math.min(r, g, b);
-      if (min > 228 && max - min < 18) {
-        p[i] = tr;
-        p[i + 1] = tg;
-        p[i + 2] = tb;
-      }
+      const fromFabric = Math.abs(r - br) + Math.abs(g - bg) + Math.abs(b - bb);
+      const backdrop = Math.min(r, g, b) > 232 && Math.max(r, g, b) - Math.min(r, g, b) < 14;
+      // soft edge so the artwork's outline doesn't fringe
+      const a = backdrop ? 0 : Math.min(1, Math.max(0, (fromFabric - 45) / 45));
+      p[i + 3] = Math.round(p[i + 3] * a);
+      if (a > 0.5) kept++;
     }
+    if (kept < (w * h) / 200) return null; // a plain side: nothing to print
     ctx.putImageData(data, 0, 0);
+    return c;
   } catch {
-    // cross-origin image without CORS: leave the backdrop as is
+    return null; // cross-origin image without CORS
   }
 }
 
